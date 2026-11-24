@@ -1,6 +1,6 @@
 //! POST /api/v1/ingest — the hot path.
 
-use crate::auth::ReadAuth;
+use crate::auth::{Principal, ReadAuth};
 use crate::error::{ApiError, ApiResult};
 use crate::ingest::{ParseError, parse};
 use crate::store::{Row, prepare_rows};
@@ -53,12 +53,17 @@ struct Prepared {
     rows: Vec<Row>,
     accepted: usize,
     dropped: usize,
+    dropped_keys: Vec<String>,
+    /// Per-point explicit steps when the server must assign some (`rows[i].step` = point index).
+    auto: Option<Vec<Option<i64>>>,
+    max_step: Option<i64>,
 }
 
 /// CPU part of ingest (decode, parse, resolve ids, build rows). Runs on the blocking pool.
-fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiResult<Prepared> {
+fn prepare(s: &AppState, principal: &Principal, headers: &HeaderMap, body: Bytes) -> ApiResult<Prepared> {
+    let user_id = principal.user.id;
     let body = decode_body(headers, body)?;
-    let p = match parse(&body, MAX_INGEST_VALUES) {
+    let mut p = match parse(&body, MAX_INGEST_VALUES) {
         Ok(p) => p,
         Err(ParseError::TooMany) => {
             return Err(ApiError::too_large(format!("more than {MAX_INGEST_VALUES} values in one request")));
@@ -67,8 +72,17 @@ fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiR
     };
     let project = p.project.as_deref().ok_or_else(|| ApiError::invalid("malformed", "missing 'project'"))?;
     let experiment = p.experiment.as_deref().ok_or_else(|| ApiError::invalid("malformed", "missing 'experiment'"))?;
-    if !valid_project_name(project) {
-        return Err(ApiError::invalid("invalid_name", "project name must match [A-Za-z0-9_.-]{1,64}"));
+    // "owner/name" addresses another user's project (requires the editor role there).
+    let (foreign_owner, pname) = match project.split_once('/') {
+        Some((o, n)) if o != principal.user.username => (Some(o), n),
+        Some((_, n)) => (None, n),
+        None => (None, project),
+    };
+    if !valid_project_name(pname) || foreign_owner.is_some_and(|o| !crate::util::valid_username(o)) {
+        return Err(ApiError::invalid(
+            "invalid_name",
+            "project must be 'name' or 'owner/name' with name matching [A-Za-z0-9_.-]{1,64}",
+        ));
     }
     if !valid_experiment_name(experiment) {
         return Err(ApiError::invalid("invalid_name", "experiment name must be 1-128 printable characters"));
@@ -96,16 +110,45 @@ fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiR
             let id = match cached {
                 Some(id) => id,
                 None => {
-                    tx.execute(
-                        "INSERT INTO projects(owner_id, name, created_at) VALUES(?1,?2,?3)
-                         ON CONFLICT(owner_id, name) DO NOTHING",
-                        params![user_id, project, now],
-                    )?;
-                    let pid: i64 = tx.query_row(
-                        "SELECT id FROM projects WHERE owner_id=?1 AND name=?2",
-                        params![user_id, project],
-                        |r| r.get(0),
-                    )?;
+                    let pid: i64 = match foreign_owner {
+                        Some(owner) => {
+                            let pid: Option<i64> = tx
+                                .query_row(
+                                    "SELECT p.id FROM projects p JOIN users u ON u.id=p.owner_id
+                                     WHERE u.username=?1 AND p.name=?2",
+                                    params![owner, pname],
+                                    |r| r.get(0),
+                                )
+                                .optional()?;
+                            let role = match pid {
+                                Some(pid) => super::load_project_acl(&tx, pid, user_id)?
+                                    .and_then(|pr| super::role_of(principal, &pr)),
+                                None => None,
+                            };
+                            match (pid, role) {
+                                (Some(pid), Some(r)) if r.can_edit() => pid,
+                                _ => {
+                                    return Err(ApiError::new(
+                                        StatusCode::FORBIDDEN,
+                                        "project_forbidden",
+                                        format!("you need the editor role on project '{owner}/{pname}' (or it does not exist)"),
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            tx.execute(
+                                "INSERT INTO projects(owner_id, name, created_at) VALUES(?1,?2,?3)
+                                 ON CONFLICT(owner_id, name) DO NOTHING",
+                                params![user_id, pname, now],
+                            )?;
+                            tx.query_row(
+                                "SELECT id FROM projects WHERE owner_id=?1 AND name=?2",
+                                params![user_id, pname],
+                                |r| r.get(0),
+                            )?
+                        }
+                    };
                     tx.execute(
                         "INSERT INTO experiments(project_id, name, created_at, updated_at) VALUES(?1,?2,?3,?3)
                          ON CONFLICT(project_id, name) DO NOTHING",
@@ -150,6 +193,14 @@ fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiR
 
     // Intern series ids: one read lock for the whole request, create the missing ones.
     let keys = s.store.exp_keys(exp_id)?;
+    let auto = p.auto_steps;
+    // With server-assigned steps, rows carry the point index until the shard writer assigns steps.
+    let row_of = |v: &crate::ingest::PVal, sid: i64| Row {
+        sid,
+        step: if auto { v.point as i64 } else { v.step },
+        value: v.value,
+        ts: v.ts,
+    };
     let mut rows = Vec::with_capacity(p.values.len());
     let mut missing: Vec<&str> = Vec::new();
     {
@@ -166,7 +217,7 @@ fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiR
                 missing.push(k);
                 continue;
             };
-            rows.push(Row { sid, step: v.step, value: v.value, ts: v.ts });
+            rows.push(row_of(v, sid));
         }
     }
     if !missing.is_empty() {
@@ -181,13 +232,19 @@ fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiR
         rows.clear();
         for v in &p.values {
             if let Some(&sid) = m.get(&*v.key) {
-                rows.push(Row { sid, step: v.step, value: v.value, ts: v.ts });
+                rows.push(row_of(v, sid));
             }
         }
     }
     let accepted = rows.len();
-    prepare_rows(&mut rows);
-    Ok(Prepared { exp_id, rows, accepted, dropped: p.dropped + (p.values.len() - accepted) })
+    let dropped = p.dropped + (p.values.len() - accepted);
+    let (auto, max_step) = if auto {
+        (Some(std::mem::take(&mut p.point_steps)), None)
+    } else {
+        prepare_rows(&mut rows);
+        (None, rows.iter().map(|r| r.step).max())
+    };
+    Ok(Prepared { exp_id, rows, accepted, dropped, dropped_keys: std::mem::take(&mut p.dropped_keys), auto, max_step })
 }
 
 pub async fn ingest(
@@ -203,11 +260,11 @@ pub async fn ingest(
             ApiError::bad_request(e.body_text())
         }
     })?;
-    let uid = p.user.id;
     let s2 = s.clone();
-    let prep = tokio::task::spawn_blocking(move || prepare(&s2, uid, &headers, body)).await??;
+    let prep = tokio::task::spawn_blocking(move || prepare(&s2, &p, &headers, body)).await??;
     if !prep.rows.is_empty() {
-        s.store.write(prep.exp_id, prep.rows).await?;
+        s.store.write(prep.exp_id, prep.rows, prep.auto, prep.max_step).await?;
     }
-    Ok(Json(json!({"ok": true, "experiment_id": prep.exp_id, "accepted": prep.accepted, "dropped": prep.dropped})))
+    Ok(Json(json!({"ok": true, "experiment_id": prep.exp_id, "accepted": prep.accepted, "dropped": prep.dropped,
+        "dropped_keys": prep.dropped_keys})))
 }

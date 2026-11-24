@@ -473,14 +473,27 @@ mod tests {
                     {"metrics":{"a":2},"step":4}]}"#;
         let p = parse(body, 100).ok().unwrap();
         assert_eq!(p.project.as_deref(), Some("p"));
-        assert_eq!(p.values.len(), 5);
-        assert_eq!(p.dropped, 3);
+        assert_eq!(p.values.len(), 6);
+        assert_eq!(p.dropped, 2);
+        assert_eq!(p.dropped_keys, vec!["e", "g"]);
         assert!(p.values[1].value.is_nan());
         assert_eq!(p.values[2].value, f64::NEG_INFINITY);
         assert_eq!(p.values[3].value, 1.0);
-        assert_eq!(p.values[4].step, 4);
+        assert_eq!(p.values[4].key, "f/x");
+        assert_eq!(p.values[5].step, 4);
+        assert_eq!(p.values[5].point, 1);
+        assert!(!p.auto_steps);
         assert!(matches!(p.values[0].key, Cow::Borrowed(_)));
         assert!(matches!(parse(body, 3), Err(ParseError::TooMany)));
-        assert!(matches!(parse(b"{\"points\":[{\"metrics\":{}}]}", 3), Err(ParseError::Malformed(_))));
+        assert!(matches!(parse(b"{\"points\":[{\"metrics\":5}]}", 3), Err(ParseError::Malformed(_))));
+        // shorthand + missing step + nesting
+        let p = parse(br#"{"step":7,"metrics":{"a":{"b":{"c":1}},"x":[1]},"project":"p"}"#, 10).ok().unwrap();
+        assert_eq!(p.values[0].key, "a/b/c");
+        assert_eq!(p.values[0].step, 7);
+        assert_eq!(p.point_steps, vec![Some(7)]);
+        assert_eq!(p.dropped_keys, vec!["x"]);
+        let p = parse(br#"{"points":[{"metrics":{"a":1}},{"step":3,"metrics":{"a":2}}]}"#, 10).ok().unwrap();
+        assert!(p.auto_steps);
+        assert_eq!(p.point_steps, vec![None, Some(3)]);
     }
 }

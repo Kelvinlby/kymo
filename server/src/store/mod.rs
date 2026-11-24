@@ -57,7 +57,9 @@ pub struct ShardShared {
 pub(crate) type Ack = oneshot::Sender<Result<(), String>>;
 
 pub(crate) enum Cmd {
-    Write { exp_id: i64, rows: Vec<Row>, ack: Ack },
+    /// `auto`: per-point explicit steps; when set, `rows[i].step` is a point index and the writer
+    /// assigns missing steps as `last_step + 1` (serialized per experiment by the shard thread).
+    Write { exp_id: i64, rows: Vec<Row>, auto: Option<Vec<Option<i64>>>, max_step: Option<i64>, ack: Ack },
     Delete { exp_ids: Vec<i64>, sids: Vec<i64>, ack: Ack },
     Shutdown,
 }
@@ -232,12 +234,18 @@ impl Store {
     }
 
     /// Queue rows (already `prepare_rows`-ed) and wait for the durable commit.
-    pub async fn write(&self, exp_id: i64, rows: Vec<Row>) -> ApiResult<()> {
+    pub async fn write(
+        &self,
+        exp_id: i64,
+        rows: Vec<Row>,
+        auto: Option<Vec<Option<i64>>>,
+        max_step: Option<i64>,
+    ) -> ApiResult<()> {
         let (ack, rx) = oneshot::channel();
         let shard = self.shard_for(exp_id);
         shard
             .tx
-            .send(Cmd::Write { exp_id, rows, ack })
+            .send(Cmd::Write { exp_id, rows, auto, max_step, ack })
             .await
             .map_err(|_| ApiError::unavailable("server is shutting down"))?;
         match rx.await {

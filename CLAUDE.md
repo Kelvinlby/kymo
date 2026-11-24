@@ -10,6 +10,8 @@ Self-hosted ML experiment tracking platform. See [README.md](README.md) for layo
 
 Every change should serve these goals:
 
+- **Framework-neutral.** Kymo is not part of the PyTorch ecosystem. It must work the same with any ML framework (PyTorch, JAX, TensorFlow, MLX, plain NumPy, …). The SDK must not depend on or assume any framework.
+
 - **Modern look.** The web UI should look clean and current.
 - **High performance.**
   - The Python SDK logs without blocking: `log()` must never stall the training loop.

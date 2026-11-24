@@ -119,8 +119,50 @@ impl Writer {
         }
     }
 
-    fn process(&mut self, batch: Vec<Cmd>) {
+    /// Assign server-side steps (in queue order) and keep the per-experiment last step current
+    /// for later commands of the same group.
+    fn assign_steps(&mut self, batch: &mut [Cmd]) {
+        for cmd in batch.iter_mut() {
+            let Cmd::Write { exp_id, rows, auto, max_step, .. } = cmd else { continue };
+            let agg = self.exps.entry(*exp_id).or_default();
+            if let Some(ps) = auto.take() {
+                let mut used = vec![false; ps.len()];
+                for r in rows.iter() {
+                    if let Some(u) = used.get_mut(r.step as usize) {
+                        *u = true;
+                    }
+                }
+                let mut cur = agg.last_step.unwrap_or(-1);
+                let assigned: Vec<i64> = ps
+                    .iter()
+                    .zip(&used)
+                    .map(|(s, &u)| match s {
+                        Some(s) => {
+                            cur = cur.max(*s);
+                            *s
+                        }
+                        None if u => {
+                            cur += 1;
+                            cur
+                        }
+                        None => 0,
+                    })
+                    .collect();
+                for r in rows.iter_mut() {
+                    r.step = assigned.get(r.step as usize).copied().unwrap_or(0);
+                }
+                super::prepare_rows(rows);
+                *max_step = rows.iter().map(|r| r.step).max();
+            }
+            if let Some(m) = *max_step {
+                agg.last_step = Some(agg.last_step.map_or(m, |l| l.max(m)));
+            }
+        }
+    }
+
+    fn process(&mut self, mut batch: Vec<Cmd>) {
         let t0 = Instant::now();
+        self.assign_steps(&mut batch);
         let mut touched: HashSet<i64, foldhash::fast::RandomState> = HashSet::default();
         let mut touched_exps: HashSet<i64, foldhash::fast::RandomState> = HashSet::default();
         let mut deleted_sids: Vec<i64> = Vec::new();
