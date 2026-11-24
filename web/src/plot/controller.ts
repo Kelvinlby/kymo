@@ -655,7 +655,17 @@ export class PanelController {
     u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
     this.host.parentElement?.classList.remove('shift');
     if (this.shiftDrag || shiftHeld) this.setStatsRange([x0, x1]);
-    else for (const p of this.peers()) p.zoomTo(x0, x1);
+    // a zoom window holding none of this chart's points would only show "no data": ignore it
+    else if (this.hasPointIn(x0, x1)) for (const p of this.peers()) p.zoomTo(x0, x1);
+  }
+
+  /** Whether any run has a finite value at an x inside [x0, x1] (loaded data). */
+  private hasPointIn(x0: number, x1: number): boolean {
+    for (const p of this.prepared) {
+      const last = upperIndex(p.x, x1); // last index with x <= x1, -1 if none
+      for (let i = lowerIndex(p.x, x0); i <= last; i++) if (Number.isFinite(p.y[i])) return true;
+    }
+    return false;
   }
 
   /** this chart and every other live chart sharing its sync key */
@@ -715,8 +725,8 @@ export class PanelController {
 
   // ------------------------------------------------------------------ wheel / drag pan & zoom
   /**
-   * Over the plot:   wheel zooms x at the mouse in fullscreen; in the grid a plain wheel scrolls the
-   *                  page and ctrl/⌘ + wheel (or pinch) zooms x · alt + wheel zooms y
+   * Over the plot:   wheel zooms both axes at the mouse in fullscreen; in the grid a plain wheel
+   *                  scrolls the page and ctrl/⌘ + wheel (or pinch) zooms · alt + wheel zooms y only
    *                  shift + wheel or a sideways wheel/swipe pans x and keeps y where it is
    *                  right-button drag pans both axes
    * Over an axis:    (fullscreen only) wheel zooms that axis · shift / sideways pans it
@@ -743,18 +753,21 @@ export class PanelController {
     const d = sideways ? dx : dy;
     if (!d) return;
     const pan = e.shiftKey || sideways;
-    let act: 'zx' | 'px' | 'zy' | 'py' | null = null;
+    let act: 'zx' | 'zxy' | 'px' | 'zy' | 'py' | null = null;
     if (onXAxis) act = pan ? 'px' : 'zx';
     else if (onYAxis) act = pan ? 'py' : 'zy';
     else if (e.altKey) act = pan ? 'py' : 'zy';
     else if (pan) act = 'px';
-    else if (this.wheelZoom || e.ctrlKey || e.metaKey) act = 'zx';
+    else if (this.wheelZoom || e.ctrlKey || e.metaKey) act = 'zxy';
     if (!act) return; // let the page scroll
     e.preventDefault();
     // trackpad pinch arrives as ctrl+wheel with small fractional deltas: give it a steeper curve
     const pinch = e.ctrlKey && e.deltaMode === 0 && !Number.isInteger(e.deltaY);
     const zf = Math.exp(Math.max(-300, Math.min(300, d)) * (pinch ? 0.01 : 0.002));
-    if (act === 'zx') this.wheelX(px, zf, 0, r.width);
+    if (act === 'zxy') {
+      this.wheelX(px, zf, 0, r.width);
+      this.wheelY(py, zf, 0, r.height);
+    } else if (act === 'zx') this.wheelX(px, zf, 0, r.width);
     else if (act === 'px') {
       this.pinY();
       this.wheelX(px, 1, Math.max(-r.width / 3, Math.min(r.width / 3, d)), r.width);

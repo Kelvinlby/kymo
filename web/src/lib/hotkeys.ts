@@ -36,7 +36,7 @@ export const SHORTCUTS: { group: string; items: ShortcutDoc[] }[] = [
       { keys: ['r'], label: 'Show / hide runs pane' },
       { keys: ['Drag'], label: 'Zoom x-axis on every chart' },
       { keys: ['Shift', 'drag'], label: 'Select a range for statistics' },
-      { keys: ['Scroll'], label: 'Zoom x-axis at the mouse in fullscreen (in the grid: ' + MOD + ' + scroll or pinch)' },
+      { keys: ['Scroll'], label: 'Zoom both axes at the mouse in fullscreen (in the grid: ' + MOD + ' + scroll or pinch)' },
       { keys: ['Scroll on an axis'], label: 'Zoom that axis in fullscreen (Shift to pan it)' },
       { keys: ['Right-drag'], label: 'Pan the chart' },
       { keys: ['Shift', 'scroll'], label: 'Pan x-axis, keeping the y-axis fixed (or scroll sideways)' },
