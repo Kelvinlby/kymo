@@ -64,6 +64,7 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
   useLayoutEffect(() => {
     const c = new PanelController(plotRef.current!, store, metricKey, syncKey, settings, setUi);
     c.label = group ? group + '/' + title : title;
+    c.wheelZoom = !!full;
     ctrl.current = c;
     if (ctrlRef) ctrlRef.current = c;
     c.setNormalize(normalize);
@@ -154,7 +155,7 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
         <span class="panel-tags">
           {ui.loading && <span class="spinner-dot" title="Loading" />}
           {ui.downsampled && (
-            <Badge title="Downsampled: lines are bucket means, the band is each bucket's min/max. Drag across the chart to zoom to full resolution.">≈</Badge>
+            <Badge title="Downsampled: lines are bucket means, the band is each bucket's min/max. Drag across the chart, or ctrl/⌘ + scroll, to zoom to full resolution.">≈</Badge>
           )}
           {ov.smoothing != null && <Badge tone="accent">EMA {ov.smoothing.toFixed(2)}</Badge>}
         </span>

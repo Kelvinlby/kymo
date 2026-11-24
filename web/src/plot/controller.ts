@@ -107,6 +107,18 @@ export function fmtX(v: number, mode: XMode): string {
   return new Date(v * 1000).toLocaleString();
 }
 
+/** min / max over sorted x arrays */
+function extentOf(xs: Float64Array[]): [number, number] | null {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const x of xs) {
+    if (!x.length) continue;
+    if (x[0] < lo) lo = x[0];
+    if (x[x.length - 1] > hi) hi = x[x.length - 1];
+  }
+  return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null;
+}
+
 export class PanelController {
   private u: uPlot | null = null;
   private visible = false;
@@ -118,6 +130,16 @@ export class PanelController {
   private structKey = '';
   private zoomX: [number, number] | null = null;
   private zoomSteps: StepWindow | null = null;
+  /** manual y window from wheel zoom/pan; null = auto-fit to the visible data */
+  private zoomY: [number, number] | null = null;
+  /** last auto-fit y range (zoomY is cleared when a zoom-out grows past it) */
+  private autoY: [number, number] | null = null;
+  /** x / step arrays of the last unzoomed data: full x extent and x->step mapping when panning outside the loaded window */
+  private overview: { x: Float64Array; step: Float64Array }[] = [];
+  private fullX: [number, number] | null = null;
+  private wheelTimer: ReturnType<typeof setTimeout> | null = null;
+  /** fullscreen: a plain vertical wheel zooms x (in the grid it scrolls the page) */
+  wheelZoom = false;
   private statsRange: [number, number] | null = null;
   private data = new Map<string, SeriesData>(); // by sid(experiment, key)
   private prepared: Prepared[] = [];
@@ -167,6 +189,7 @@ export class PanelController {
   setNormalize(b: boolean) {
     if (b === this.normalize) return;
     this.normalize = b;
+    this.clearYZoomState();
     if (this.structureKey() !== this.structKey) this.recreate();
     else this.rebuild();
   }
@@ -213,9 +236,12 @@ export class PanelController {
       this.zoomSteps = null;
       this.statsRange = null;
       this.data.clear();
-      this.setUi({ zoomed: false, statsRange: null });
+      this.overview = [];
+      this.fullX = null;
+      this.setUi({ zoomed: !!this.zoomY, statsRange: null });
       queueMicrotask(() => this.refresh());
     }
+    if (prevLog !== this.logY) this.clearYZoomState();
     const sk = this.structureKey();
     if (sk !== this.structKey) {
       this.recreate();
@@ -231,6 +257,7 @@ export class PanelController {
 
   destroy() {
     this.destroyed = true;
+    if (this.wheelTimer) clearTimeout(this.wheelTimer);
     this.unsub?.();
     this.destroyPlot();
   }
@@ -328,6 +355,10 @@ export class PanelController {
       points += d.step.length;
     }
     this.prepared = prepared;
+    if (!this.zoomX) {
+      this.overview = prepared.map((p) => ({ x: p.x, step: p.d.step }));
+      this.fullX = extentOf(prepared.map((p) => p.x));
+    }
     // one slot per *selected* run so series indexes are stable even when some data is missing
     const xs: Float64Array[] = [];
     const cols: (Float64Array | null)[][] = [];
@@ -377,6 +408,7 @@ export class PanelController {
     this.statsBand.className = 'stats-band';
     this.statsBand.style.display = 'none';
     this.u.over.appendChild(this.statsBand);
+    this.u.root.addEventListener('wheel', this.onWheel, { passive: false });
     this.u.over.addEventListener('mouseenter', () => (this.hovered = true));
     this.u.over.addEventListener('mouseleave', () => {
       this.hovered = false;
@@ -560,6 +592,13 @@ export class PanelController {
   }
 
   private yRange(mn: number | null, mx: number | null): uPlot.Range.MinMax {
+    if (this.zoomY) return [this.zoomY[0], this.zoomY[1]];
+    const r = this.autoYRange(mn, mx);
+    this.autoY = [r[0]!, r[1]!];
+    return r;
+  }
+
+  private autoYRange(mn: number | null, mx: number | null): uPlot.Range.MinMax {
     const pct = this.settings.clipPct;
     if (pct > 0 && this.prepared.length) {
       const lo = this.zoomX ? this.zoomX[0] : -Infinity;
@@ -603,14 +642,162 @@ export class PanelController {
 
   resetZoom() {
     const had = this.zoomX || this.statsRange;
+    const hadY = this.zoomY;
+    if (this.wheelTimer) clearTimeout(this.wheelTimer);
+    this.wheelTimer = null;
     this.zoomX = null;
     this.zoomSteps = null;
+    this.zoomY = null;
     this.statsRange = null;
     this.setUi({ zoomed: false, statsRange: null });
     if (had) {
       this.data.clear();
       this.refresh();
+    } else if (hadY && this.u) this.u.setData(this.u.data, true);
+  }
+
+  // ------------------------------------------------------------------ wheel pan / zoom
+  /**
+   * Over the plot:   ctrl/⌘ + wheel (or pinch) zooms x · shift + wheel (or a sideways swipe) pans x
+   *                  alt + wheel zooms y · alt + shift + wheel pans y
+   * Over an axis:    wheel zooms that axis · shift + wheel pans it
+   * Fullscreen:      a plain wheel over the plot zooms x too (in the grid it scrolls the page).
+   * Zooms are anchored at the mouse. Rescaling is instant; the x window is refetched at full
+   * resolution once the wheel settles.
+   */
+  private onWheel = (e: WheelEvent) => {
+    const u = this.u;
+    if (!u) return;
+    const r = u.over.getBoundingClientRect();
+    const px = e.clientX - r.left;
+    const py = e.clientY - r.top;
+    const inX = px >= 0 && px <= r.width;
+    const inY = py >= 0 && py <= r.height;
+    const onXAxis = inX && py > r.height;
+    const onYAxis = inY && px < 0;
+    if (!(inX && inY) && !onXAxis && !onYAxis) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
+    const dx = e.deltaX * unit;
+    const dy = e.deltaY * unit;
+    // Chrome / Firefox on Windows & Linux deliver shift+wheel as deltaX
+    const sideways = Math.abs(dx) > Math.abs(dy);
+    const d = sideways ? dx : dy;
+    if (!d) return;
+    const pan = e.shiftKey || sideways;
+    let act: 'zx' | 'px' | 'zy' | 'py' | null = null;
+    if (onXAxis) act = pan ? 'px' : 'zx';
+    else if (onYAxis) act = pan ? 'py' : 'zy';
+    else if (e.altKey) act = pan ? 'py' : 'zy';
+    else if (e.ctrlKey || e.metaKey) act = 'zx';
+    else if (pan) act = 'px';
+    else if (this.wheelZoom) act = 'zx';
+    if (!act) return; // let the page scroll
+    e.preventDefault();
+    // trackpad pinch arrives as ctrl+wheel with small fractional deltas: give it a steeper curve
+    const pinch = e.ctrlKey && e.deltaMode === 0 && !Number.isInteger(e.deltaY);
+    const zf = Math.exp(Math.max(-300, Math.min(300, d)) * (pinch ? 0.01 : 0.002));
+    if (act === 'zx') this.wheelX(px, zf, 0, r.width);
+    else if (act === 'px') this.wheelX(px, 1, d, r.width);
+    else if (act === 'zy') this.wheelY(py, zf, 0, r.height);
+    else this.wheelY(py, 1, -d, r.height);
+  };
+
+  /** Zoom x by `f` around pixel `at`, then shift by `shiftPx` (of a `w`-pixel plot). */
+  private wheelX(at: number, f: number, shiftPx: number, w: number) {
+    const u = this.u!;
+    // own state first: uPlot commits setScale in a microtask, so u.scales lags within a burst
+    let a = this.zoomX ? this.zoomX[0] : u.scales.x.min;
+    let b = this.zoomX ? this.zoomX[1] : u.scales.x.max;
+    if (a == null || b == null || !(b > a)) return;
+    const c = a + ((b - a) * Math.max(0, Math.min(w, at))) / w;
+    a = c - (c - a) * f;
+    b = c + (b - c) * f;
+    const sh = ((b - a) * shiftPx) / w;
+    a += sh;
+    b += sh;
+    // bounds: the full extent seen unzoomed, grown by whatever newer data has arrived since
+    let full = this.fullX;
+    const cur = extentOf(this.prepared.map((p) => p.x));
+    if (full && cur) full = [Math.min(full[0], cur[0]), Math.max(full[1], cur[1])];
+    else full = full ?? cur;
+    if (full && full[1] > full[0]) {
+      if (b - a >= full[1] - full[0]) {
+        if (this.zoomX) this.clearXZoom(full);
+        return;
+      }
+      if (a < full[0]) [a, b] = [full[0], b + full[0] - a];
+      if (b > full[1]) [a, b] = [a - (b - full[1]), full[1]];
     }
+    const minSpan = this.settings.xMode === 'step' ? 2 : 1e-3;
+    if (b - a < minSpan) {
+      if (f < 1) return;
+      const m = (a + b) / 2;
+      [a, b] = [m - minSpan / 2, m + minSpan / 2];
+    }
+    this.zoomX = [a, b];
+    this.setUi({ zoomed: true });
+    u.setScale('x', { min: a, max: b });
+    this.scheduleWindowFetch();
+  }
+
+  private clearXZoom(full: [number, number]) {
+    this.zoomX = null;
+    this.setUi({ zoomed: !!this.zoomY });
+    this.u?.setScale('x', { min: full[0], max: full[1] });
+    this.scheduleWindowFetch();
+  }
+
+  /** Refetch the visible x window (or the unzoomed overview) once the wheel has been still a moment. */
+  private scheduleWindowFetch() {
+    if (this.wheelTimer) clearTimeout(this.wheelTimer);
+    this.wheelTimer = setTimeout(() => {
+      this.wheelTimer = null;
+      if (this.destroyed) return;
+      this.zoomSteps = this.zoomX ? this.xToSteps(this.zoomX[0], this.zoomX[1]) : null;
+      this.refresh();
+    }, 150);
+  }
+
+  /** Zoom y by `f` around pixel `at` and shift by `shiftPx` (of an `h`-pixel plot); log axes zoom in log space. */
+  private wheelY(at: number, f: number, shiftPx: number, h: number) {
+    const u = this.u!;
+    const lo = this.zoomY ? this.zoomY[0] : u.scales.y.min;
+    const hi = this.zoomY ? this.zoomY[1] : u.scales.y.max;
+    if (lo == null || hi == null || !(hi > lo)) return;
+    const log = this.logY;
+    if (log && !(lo > 0)) return;
+    const T = log ? Math.log10 : (v: number) => v;
+    const iT = log ? (v: number) => 10 ** v : (v: number) => v;
+    const c = T(hi) - ((T(hi) - T(lo)) * Math.max(0, Math.min(h, at))) / h;
+    let a = c - (c - T(lo)) * f;
+    let b = c + (T(hi) - c) * f;
+    const sh = ((b - a) * shiftPx) / h;
+    a += sh;
+    b += sh;
+    const auto = this.zoomY ? this.autoY : [lo, hi];
+    // zooming out stops at the auto-fit range (and returns to auto-fit)
+    if (f > 1 && auto && auto[1] > auto[0] && (!log || auto[0] > 0) && b - a >= T(auto[1]) - T(auto[0])) {
+      if (this.zoomY) this.clearYZoom();
+      return;
+    }
+    const scale = Math.max(Math.abs(a), Math.abs(b), 1e-300);
+    if (!(b - a > scale * 1e-9) || !Number.isFinite(a) || !Number.isFinite(b)) return;
+    this.zoomY = [iT(a), iT(b)];
+    this.setUi({ zoomed: true });
+    u.setScale('y', { min: this.zoomY[0], max: this.zoomY[1] });
+  }
+
+  private clearYZoom() {
+    this.zoomY = null;
+    this.setUi({ zoomed: !!this.zoomX });
+    if (this.u) this.u.setData(this.u.data, true);
+  }
+
+  /** y window is in the old axis units after a log/normalize switch; the chart is recreated right after */
+  private clearYZoomState() {
+    if (!this.zoomY) return;
+    this.zoomY = null;
+    this.setUi({ zoomed: !!this.zoomX });
   }
 
   setStatsRange(r: [number, number] | null) {
@@ -624,13 +811,15 @@ export class PanelController {
     if (this.settings.xMode === 'step') return { min: Math.floor(x0), max: Math.ceil(x1) };
     let smin = Infinity;
     let smax = -Infinity;
-    for (const p of this.prepared) {
+    // loaded data maps precisely; the unzoomed overview covers ranges panned outside it
+    const srcs = [...this.prepared.map((p) => ({ x: p.x, step: p.d.step })), ...this.overview];
+    for (const p of srcs) {
       if (!p.x.length) continue;
       const i0 = Math.max(0, lowerIndex(p.x, x0) - 1);
       const i1 = Math.min(p.x.length - 1, upperIndex(p.x, x1) + 1);
       if (i1 < i0) continue;
-      smin = Math.min(smin, p.d.step[i0]);
-      smax = Math.max(smax, p.d.step[i1]);
+      smin = Math.min(smin, p.step[i0]);
+      smax = Math.max(smax, p.step[i1]);
     }
     if (!Number.isFinite(smin)) return { min: 0, max: 0 };
     return { min: Math.floor(smin), max: Math.ceil(smax) };

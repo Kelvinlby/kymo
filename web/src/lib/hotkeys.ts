@@ -5,6 +5,7 @@ import { modalOpen } from '../components/overlay';
 
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 export const MOD = isMac ? '⌘' : 'Ctrl';
+export const ALT = isMac ? '⌥' : 'Alt';
 
 export interface ShortcutDoc {
   keys: string[];
@@ -34,6 +35,11 @@ export const SHORTCUTS: { group: string; items: ShortcutDoc[] }[] = [
       { keys: ['Shift', 'click'], label: 'Pick charts to compare; release Shift to open them in one chart' },
       { keys: ['r'], label: 'Show / hide runs pane' },
       { keys: ['Shift', 'drag'], label: 'Select a range for statistics' },
+      { keys: [MOD, 'scroll'], label: 'Zoom x-axis at the mouse (pinch on a trackpad; plain scroll in fullscreen)' },
+      { keys: ['Shift', 'scroll'], label: 'Pan x-axis (or swipe sideways)' },
+      { keys: [ALT, 'scroll'], label: 'Zoom y-axis at the mouse' },
+      { keys: [ALT, 'Shift', 'scroll'], label: 'Pan y-axis' },
+      { keys: ['Scroll on an axis'], label: 'Zoom that axis (Shift to pan it)' },
       { keys: ['Double-click'], label: 'Reset zoom' },
     ],
   },
