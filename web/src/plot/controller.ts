@@ -28,6 +28,8 @@ interface Prepared {
   main: Float64Array; // smoothed (or raw) values
   min: Float64Array | null;
   max: Float64Array | null;
+  /** what is drawn: equal to main/y/min/max, or rescaled copies in normalize mode */
+  plot: { main: Float64Array; y: Float64Array; min: Float64Array | null; max: Float64Array | null };
 }
 
 const SERIES_PER_RUN = 4; // main, raw (faint), max, min
@@ -152,8 +154,21 @@ export class PanelController {
   get smoothing() {
     return this.ov.smoothing ?? this.settings.smoothing;
   }
+  /** log y never applies while normalized (normalized values touch 0) */
   get logY() {
-    return this.ov.logY ?? this.settings.logY;
+    return !this.normalize && (this.ov.logY ?? this.settings.logY);
+  }
+  /**
+   * Compare view: rescale every line to [0, 1] by the min/max of its plotted (smoothed) values so
+   * metrics on different scales share one axis. Only drawing changes; the tooltip, stats and CSV keep
+   * the real values.
+   */
+  private normalize = false;
+  setNormalize(b: boolean) {
+    if (b === this.normalize) return;
+    this.normalize = b;
+    if (this.structureKey() !== this.structKey) this.recreate();
+    else this.rebuild();
   }
   private get maxPoints() {
     return this.zoomSteps ? Math.max(2000, this.settings.maxPoints) : this.settings.maxPoints;
@@ -211,7 +226,7 @@ export class PanelController {
   }
 
   private structureKey() {
-    return [this.runsKey, this.logY ? 'log' : 'lin', this.settings.xMode].join('#');
+    return [this.runsKey, this.logY ? 'log' : 'lin', this.settings.xMode, this.normalize ? 'norm' : ''].join('#');
   }
 
   destroy() {
@@ -307,7 +322,8 @@ export class PanelController {
         mx = mx && positiveOnly(mx);
       }
       const main = w > 0 ? emaDebiased(y, w) : y;
-      prepared.push({ run, d, x, y, main, min: mn, max: mx });
+      const plot = this.normalize ? normalized(main, y, mn, mx) : { main, y, min: mn, max: mx };
+      prepared.push({ run, d, x, y, main, min: mn, max: mx, plot });
       if (d.downsampled) downsampled = true;
       points += d.step.length;
     }
@@ -322,7 +338,7 @@ export class PanelController {
         cols.push([null, null, null, null]);
       } else {
         xs.push(p.x);
-        cols.push([p.main, w > 0 ? p.y : null, p.max, p.min]);
+        cols.push([p.plot.main, w > 0 ? p.plot.y : null, p.plot.max, p.plot.min]);
       }
     }
     if (this.runs.length === 0) {
@@ -548,7 +564,7 @@ export class PanelController {
     if (pct > 0 && this.prepared.length) {
       const lo = this.zoomX ? this.zoomX[0] : -Infinity;
       const hi = this.zoomX ? this.zoomX[1] : Infinity;
-      const pairs = this.prepared.map((p) => ({ x: p.x, y: this.smoothing > 0 ? p.main : p.y }));
+      const pairs = this.prepared.map((p) => ({ x: p.x, y: this.smoothing > 0 ? p.plot.main : p.plot.y }));
       const r = clippedRange(pairs, pct, lo, hi);
       if (r) [mn, mx] = r;
     }
@@ -783,6 +799,26 @@ export class PanelController {
     this.ui = { ...this.ui, ...p };
     this.onUi(this.ui);
   }
+}
+
+/** Map every array of one line through v -> (v - lo) / (hi - lo), lo/hi = finite min/max of `main`. */
+function normalized(main: Float64Array, y: Float64Array, mn: Float64Array | null, mx: Float64Array | null) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < main.length; i++) {
+    const v = main[i];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (!(hi >= lo)) return { main, y, min: mn, max: mx }; // no finite values
+  const span = hi - lo || 1;
+  const f = (a: Float64Array) => {
+    const out = new Float64Array(a.length);
+    for (let i = 0; i < a.length; i++) out[i] = (a[i] - lo) / span;
+    return out;
+  };
+  const m = f(main);
+  return { main: m, y: y === main ? m : f(y), min: mn && f(mn), max: mx && f(mx) };
 }
 
 function positiveOnly(a: Float64Array): Float64Array {

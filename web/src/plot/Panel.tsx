@@ -43,11 +43,13 @@ interface Props {
   /** position in the compare selection (shift-click), or -1 */
   compareIdx?: number;
   onCompareClick?: (key: string) => void;
+  /** compare view: rescale each line to [0, 1] (drawing only) */
+  normalize?: boolean;
 }
 
 const INITIAL_UI: PanelUiState = { loading: false, zoomed: false, statsRange: null, empty: false, downsampled: false, error: null, pointCount: 0 };
 
-export const Panel = memo(function Panel({ metricKey, title, group, runs, settings, store, syncKey, pinned, onTogglePin, onFullscreen, full, statsSink, ctrlRef, compareIdx = -1, onCompareClick }: Props) {
+export const Panel = memo(function Panel({ metricKey, title, group, runs, settings, store, syncKey, pinned, onTogglePin, onFullscreen, full, statsSink, ctrlRef, compareIdx = -1, onCompareClick, normalize = false }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<HTMLDivElement>(null);
   const ctrl = useRef<PanelController | null>(null);
@@ -64,6 +66,7 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
     c.label = group ? group + '/' + title : title;
     ctrl.current = c;
     if (ctrlRef) ctrlRef.current = c;
+    c.setNormalize(normalize);
     c.setSettings(settings, ov);
     c.setRuns(runs);
     const unVis = observeVisibility(rootRef.current!, (v) => c.setVisible(v));
@@ -80,6 +83,9 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
   useEffect(() => {
     ctrl.current?.setRuns(runs);
   }, [runs]);
+  useEffect(() => {
+    ctrl.current?.setNormalize(normalize);
+  }, [normalize]);
   useEffect(() => {
     ctrl.current?.setSettings(settings, ov);
     overrideMemory.set(memKey, ov);
@@ -154,16 +160,18 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
         </span>
         <div class={cx('panel-tools', (menuOpen || ui.zoomed) && 'keep')}>
           {ui.zoomed && <IconButton icon={RotateCcw} label="Reset zoom" kbd="double-click" onClick={() => ctrl.current?.resetZoom()} active />}
-          <Button
-            size="xs"
-            variant="ghost"
-            class={cx('log-btn', logY && 'active')}
-            data-tip="Log scale (y)"
-            aria-pressed={logY}
-            onClick={() => setOv({ ...ov, logY: !logY === settings.logY ? null : !logY })}
-          >
-            log
-          </Button>
+          {!normalize && (
+            <Button
+              size="xs"
+              variant="ghost"
+              class={cx('log-btn', logY && 'active')}
+              data-tip="Log scale (y)"
+              aria-pressed={logY}
+              onClick={() => setOv({ ...ov, logY: !logY === settings.logY ? null : !logY })}
+            >
+              log
+            </Button>
+          )}
           <Popover
             placement="bottom-end"
             width={260}

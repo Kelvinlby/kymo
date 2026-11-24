@@ -79,7 +79,9 @@ them in order (accent ring + number, floating hint); releasing Shift opens one f
 (window blur drops the pick). A shift-*drag* on a chart is still the stats range and does not pick the card. The compare
 chart draws one line per metric × run — coloured by run and dashed per metric, or coloured per metric when only one
 run is selected — on one shared y axis; `RunInfo.key`/`dash` let a controller line carry its own metric. CSV export
-gains a `metric` column there.
+gains a `metric` column there. The compare header's Normalize switch (persisted, `kymo:compareNorm`) rescales each line
+to [0, 1] by the min/max of its plotted (smoothed) values over the loaded data; only the drawing changes — tooltip,
+stats and CSV keep real values — and log-y is unavailable while it is on.
 
 Shortcuts: `/` metric filter, `s` smoothing on/off, `l` log-y, `x` cycle x axis, `f` fullscreen the hovered chart,
 `r` runs pane, `?` help, `[` sidebar, `g o / g p / g s` navigation, Esc closes the top-most layer.

@@ -435,6 +435,11 @@ function FullscreenChart(
   const sink = useCallback((s: StatsData | null, ui: PanelUiState) => setSt({ s, ui }), []);
   const ctrlRef = useRef<PanelController | null>(null);
   const keys = props.metricKeys;
+  const [norm, setNormRaw] = useState(() => lsGet('kymo:compareNorm', false));
+  const setNorm = (b: boolean) => {
+    setNormRaw(b);
+    lsSet('kymo:compareNorm', b);
+  };
   const lines = useMemo(() => (keys ? compareLines(keys, props.runs) : props.runs), [keys, props.runs]);
   const panelKey = keys ? keys.join(' + ') : props.metricKey!;
   const g = keys ? '' : groupOf(props.metricKey!);
@@ -462,10 +467,19 @@ function FullscreenChart(
           </>
         )
       }
+      headerExtra={
+        keys && (
+          <div class="compare-norm" data-tip="Scale each line to 0–1 by its own min/max so metrics on different scales share the axis. Tooltip and statistics keep the real values.">
+            <span>Normalize</span>
+            <Switch checked={norm} onChange={setNorm} ariaLabel="Normalize each line to 0–1" />
+          </div>
+        )
+      }
       onClose={props.onClose}
     >
       <Panel
         metricKey={panelKey}
+        normalize={!!keys && norm}
         title={keys ? panelKey : shortKey(props.metricKey!)}
         runs={lines}
         settings={props.settings}
