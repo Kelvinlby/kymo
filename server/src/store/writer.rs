@@ -122,8 +122,16 @@ impl Writer {
     /// Assign server-side steps (in queue order) and keep the per-experiment last step current
     /// for later commands of the same group.
     fn assign_steps(&mut self, batch: &mut [Cmd]) {
+        // Hot path: plain SDK batches carry explicit steps; nothing to do unless some command
+        // in this group needs server-assigned steps.
+        if !batch.iter().any(|c| matches!(c, Cmd::Write { auto: Some(_), .. })) {
+            return;
+        }
         for cmd in batch.iter_mut() {
             let Cmd::Write { exp_id, rows, auto, max_step, .. } = cmd else { continue };
+            if auto.is_none() && max_step.is_none() {
+                *max_step = rows.iter().map(|r| r.step).max();
+            }
             let agg = self.exps.entry(*exp_id).or_default();
             if let Some(ps) = auto.take() {
                 let mut used = vec![false; ps.len()];

@@ -135,8 +135,13 @@ pub fn valid_experiment_name(s: &str) -> bool {
     (1..=128).contains(&n) && !s.chars().any(|c| c.is_control())
 }
 
+#[inline]
 pub fn valid_metric_key(s: &str) -> bool {
-    (1..=256).contains(&s.len()) && !s.chars().any(|c| c.is_control())
+    // Control chars = C0 (< 0x20), DEL, and C1 (U+0080..U+009F = 0xC2 0x80..0x9F in UTF-8).
+    let b = s.as_bytes();
+    (1..=256).contains(&b.len())
+        && !b.iter().any(|&c| c < 0x20 || c == 0x7f)
+        && !b.windows(2).any(|w| w[0] == 0xc2 && (0x80..=0x9f).contains(&w[1]))
 }
 
 pub fn valid_status(s: &str) -> bool {
@@ -151,6 +156,15 @@ mod tests {
         let mut v = vec!["layer10", "layer2", "a/b", "layer1", "eval/acc", "layer02", "train/loss"];
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, vec!["a/b", "eval/acc", "layer1", "layer2", "layer02", "layer10", "train/loss"]);
+    }
+    #[test]
+    fn metric_keys() {
+        assert!(valid_metric_key("train/loss"));
+        assert!(valid_metric_key("über/ß"));
+        assert!(!valid_metric_key(""));
+        assert!(!valid_metric_key("a\nb"));
+        assert!(!valid_metric_key("a\u{85}b"));
+        assert!(!valid_metric_key(&"x".repeat(257)));
     }
     #[test]
     fn time() {

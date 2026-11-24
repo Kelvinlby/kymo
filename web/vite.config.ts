@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8080', changeOrigin: false },
+      '/api': { target: (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.KYMO_API || 'http://localhost:8080', changeOrigin: false },
     },
   },
   build: {

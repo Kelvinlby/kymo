@@ -56,7 +56,11 @@ export function useFocusTrap(ref: { current: HTMLElement | null }, active = true
     const prev = document.activeElement as HTMLElement | null;
     const el = ref.current;
     if (!el) return;
-    const first = (el.querySelector('[autofocus],[data-autofocus]') as HTMLElement | null) || (el.querySelector(FOCUSABLE) as HTMLElement | null);
+    // explicit autofocus first, then the first field in the body; otherwise the dialog itself
+    // (focusing the close button would pop its tooltip and invite accidental dismissal)
+    const first =
+      (el.querySelector('[autofocus],[data-autofocus]') as HTMLElement | null) ||
+      (el.querySelector('.dialog-body input:not([type=checkbox]),.dialog-body textarea,.dialog-body select') as HTMLElement | null);
     // after paint so transitions/portals are attached
     requestAnimationFrame(() => (first || el).focus({ preventScroll: true }));
     const onKey = (e: KeyboardEvent) => {

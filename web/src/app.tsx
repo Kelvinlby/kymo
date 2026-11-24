@@ -2,14 +2,29 @@ import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import { api, onAuthError, type AuthState } from './api';
 import { AuthContext, useAuth } from './auth';
-import { Link, Redirect, match, useLocation } from './router';
-import { Shell } from './components/Shell';
+import { Redirect, match, useLocation } from './router';
+import { AppFrame, Logo, NotFound } from './components/Shell';
+import { OverlayHost } from './components/overlay';
+import { Button, Spinner } from './components/ui';
+import { CircleExclamationPoint, RefreshCw } from './components/icons';
 import { EnrollPasskey, Login, PasskeyPrompt, Setup, Signup } from './pages/Auth';
+import { Overview } from './pages/Overview';
 import { Projects } from './pages/Projects';
-import { Workspace } from './pages/Workspace';
-import { ExperimentPage } from './pages/Experiment';
-import { Settings } from './pages/Settings';
-import { Admin } from './pages/Admin';
+import { Suspense, lazy } from 'preact/compat';
+
+// chart pages (uPlot) and the account pages load on demand; the overview stays in the main bundle
+const Workspace = lazy(() => import('./pages/Workspace').then((m) => m.Workspace));
+const ExperimentPage = lazy(() => import('./pages/Experiment').then((m) => m.ExperimentPage));
+const Settings = lazy(() => import('./pages/Settings').then((m) => m.Settings));
+const Admin = lazy(() => import('./pages/Admin').then((m) => m.Admin));
+
+function PageLoading() {
+  return (
+    <div class="page-loading" aria-busy="true">
+      <Spinner size={18} />
+    </div>
+  );
+}
 
 export function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
@@ -32,24 +47,30 @@ export function App() {
     });
   }, [refresh]);
 
-  if (!auth) {
-    return (
-      <div class="auth-wrap">
-        {fatal ? (
-          <div class="col" style={{ alignItems: 'center' }}>
-            <div class="error">{fatal}</div>
-            <button onClick={() => refresh().catch(() => {})}>Retry</button>
-          </div>
-        ) : (
-          <span class="faint">Loading…</span>
-        )}
-      </div>
-    );
-  }
   return (
-    <AuthContext.Provider value={{ auth, refresh }}>
-      <Guard />
-    </AuthContext.Provider>
+    <>
+      {!auth ? (
+        <div class="boot">
+          <Logo size={36} />
+          {fatal ? (
+            <div class="boot-error">
+              <CircleExclamationPoint size={16} aria-hidden="true" />
+              <span>{fatal}</span>
+              <Button size="sm" icon={RefreshCw} onClick={() => refresh().catch(() => {})}>
+                Retry
+              </Button>
+            </div>
+          ) : (
+            <Spinner size={18} />
+          )}
+        </div>
+      ) : (
+        <AuthContext.Provider value={{ auth, refresh }}>
+          <Guard />
+        </AuthContext.Provider>
+      )}
+      <OverlayHost />
+    </>
   );
 }
 
@@ -86,27 +107,17 @@ function Guard() {
 
   let page: ComponentChildren;
   let m: Record<string, string> | null;
-  if (path === '/') page = <Projects />;
+  if (path === '/') page = <Overview />;
+  else if (path === '/projects') page = <Projects />;
   else if ((m = match('/p/:id', path))) page = <Workspace key={m.id} projectId={Number(m.id)} />;
   else if ((m = match('/e/:id', path))) page = <ExperimentPage key={m.id} experimentId={Number(m.id)} />;
   else if (path === '/settings') page = <Settings />;
-  else if (path === '/admin') page = auth.user?.is_admin ? <Admin /> : <NotFound msg="Admin only." />;
+  else if (path === '/admin') page = auth.user?.is_admin ? <Admin /> : <NotFound msg="This page is for administrators" />;
   else page = <NotFound />;
-  return page;
-}
-
-function NotFound({ msg }: { msg?: string }) {
   return (
-    <Shell>
-      <div class="page">
-        <div class="empty">
-          <h2>{msg || 'Page not found'}</h2>
-          <p>
-            <Link href="/">Back to projects</Link>
-          </p>
-        </div>
-      </div>
-    </Shell>
+    <AppFrame>
+      <Suspense fallback={<PageLoading />}>{page}</Suspense>
+    </AppFrame>
   );
 }
 

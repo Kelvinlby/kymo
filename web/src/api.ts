@@ -16,15 +16,32 @@ export interface AuthState {
   policy: { passkey_required_for_all: boolean };
   version: string;
 }
+export type ProjectRole = 'owner' | 'admin' | 'editor' | 'viewer';
+export type ShareRole = 'viewer' | 'editor';
+export interface UserRef {
+  id: number;
+  username: string;
+  display_name?: string;
+}
 export interface Project {
   id: number;
   name: string;
   description: string;
-  shared: boolean;
-  owner: { id: number; username: string };
+  owner: UserRef;
   created_at: Timestamp;
   experiment_count: number;
   last_activity: Timestamp | null;
+  /** SPEC §1 sharing; optional so older servers (with `shared: bool`) keep working */
+  role?: ProjectRole;
+  everyone?: ShareRole | null;
+  member_count?: number;
+  running_count?: number;
+  /** legacy (pre-sharing servers) */
+  shared?: boolean;
+}
+export interface Sharing {
+  everyone: ShareRole | null;
+  members: { user: UserRef; role: ShareRole }[];
 }
 export type Status = 'running' | 'finished' | 'failed' | 'crashed';
 export interface Experiment {
@@ -191,7 +208,10 @@ export const api = {
   projects: () => get<Project[]>('/projects'),
   project: (id: number) => get<Project>('/projects/' + id),
   createProject: (name: string, description?: string) => post<Project>('/projects', { name, description }),
-  patchProject: (id: number, b: { name?: string; description?: string; shared?: boolean }) => patch<Project>('/projects/' + id, b),
+  patchProject: (id: number, b: { name?: string; description?: string }) => patch<Project>('/projects/' + id, b),
+  sharing: (id: number) => get<Sharing>('/projects/' + id + '/sharing'),
+  putSharing: (id: number, b: { everyone: ShareRole | null; members: { user_id: number; role: ShareRole }[] }) => put<Sharing>('/projects/' + id + '/sharing', b),
+  directory: () => get<UserRef[]>('/users'),
   deleteProject: (id: number) => del('/projects/' + id),
   experiments: (pid: number, signal?: AbortSignal) => get<Experiment[]>('/projects/' + pid + '/experiments', signal),
   metricKeys: (pid: number) => get<string[]>('/projects/' + pid + '/metric-keys'),
@@ -204,3 +224,16 @@ export const api = {
   rawUrl: (experimentId: number, key: string, format: 'csv' | 'json' = 'csv') =>
     `/api/v1/series/raw?experiment_id=${experimentId}&key=${encodeURIComponent(key)}&format=${format}`,
 };
+
+/** The caller's role in a project; falls back to owner/admin/viewer for servers without `role`. */
+export function projectRole(p: Project | null | undefined, user: User | null | undefined): ProjectRole {
+  if (!p) return 'viewer';
+  if (p.role) return p.role;
+  if (user && p.owner.id === user.id) return 'owner';
+  if (user?.is_admin) return 'admin';
+  return 'viewer';
+}
+export const canManage = (r: ProjectRole) => r === 'owner' || r === 'admin';
+export const canEdit = (r: ProjectRole) => r !== 'viewer';
+/** `everyone` with a fallback for legacy `shared: true`. */
+export const everyoneRole = (p: Project): ShareRole | null => (p.everyone !== undefined ? p.everyone : p.shared ? 'viewer' : null);

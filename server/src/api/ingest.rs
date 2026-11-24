@@ -242,7 +242,7 @@ fn prepare(s: &AppState, principal: &Principal, headers: &HeaderMap, body: Bytes
         (Some(std::mem::take(&mut p.point_steps)), None)
     } else {
         prepare_rows(&mut rows);
-        (None, rows.iter().map(|r| r.step).max())
+        (None, None)
     };
     Ok(Prepared { exp_id, rows, accepted, dropped, dropped_keys: std::mem::take(&mut p.dropped_keys), auto, max_step })
 }

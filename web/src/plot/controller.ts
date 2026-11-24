@@ -4,6 +4,7 @@
 import uPlot from 'uplot';
 import { alignRuns, clippedRange, emaDebiased, lowerIndex, upperIndex, type Stats } from '../lib/stats';
 import { fmtDuration, fmtInt, fmtNum, fmtSI } from '../lib/format';
+import { onThemeChange } from '../lib/theme';
 import { cssVar, withAlpha } from './colors';
 import { sid, type SeriesData, type SeriesStore, type StepWindow } from './store';
 import { statsFor } from './statsClient';
@@ -40,6 +41,36 @@ if (typeof window !== 'undefined') {
   window.addEventListener('keyup', upd, true);
   window.addEventListener('mousedown', upd, true);
   window.addEventListener('blur', () => (shiftHeld = false));
+}
+
+// Theme tokens are read from CSS variables once per theme change; axes/grid/cursor use functions that
+// read them at draw time, so a theme switch only redraws charts (no re-creation, no refetch).
+interface PlotTheme {
+  axis: string;
+  grid: string;
+  tick: string;
+  surface: string;
+  text: string;
+  font: string;
+  mono: string;
+}
+const readTheme = (): PlotTheme => ({
+  axis: cssVar('--plot-axis', '#777'),
+  grid: cssVar('--plot-grid', 'rgba(0,0,0,.07)'),
+  tick: cssVar('--plot-tick', 'rgba(0,0,0,.14)'),
+  surface: cssVar('--surface', '#fff'),
+  text: cssVar('--text', '#000'),
+  font: cssVar('--font', 'sans-serif'),
+  mono: cssVar('--mono', 'monospace'),
+});
+let T: PlotTheme | null = null;
+const theme = () => (T ??= readTheme());
+const livePlots = new Set<uPlot>();
+if (typeof window !== 'undefined') {
+  onThemeChange(() => {
+    T = readTheme();
+    for (const u of livePlots) u.redraw(false);
+  });
 }
 
 let tipEl: HTMLDivElement | null = null;
@@ -85,6 +116,8 @@ export class PanelController {
   private statsBand: HTMLDivElement | null = null;
   private ui: PanelUiState = { loading: false, zoomed: false, statsRange: null, empty: false, downsampled: false, error: null, pointCount: 0 };
   statsWanted = false;
+  /** short title shown in the tooltip header */
+  label = '';
   onStats: ((s: Stats[], runs: RunInfo[], downsampled: boolean[]) => void) | null = null;
 
   constructor(
@@ -161,7 +194,7 @@ export class PanelController {
   }
 
   private structureKey() {
-    return [this.runsKey, this.logY ? 'log' : 'lin', this.settings.xMode, this.settings.theme].join('#');
+    return [this.runsKey, this.logY ? 'log' : 'lin', this.settings.xMode].join('#');
   }
 
   destroy() {
@@ -298,6 +331,7 @@ export class PanelController {
     if (!this.aligned) return; // created once the first data (or cache) arrives
     this.structKey = this.structureKey();
     this.u = new uPlot(this.options(width, height), this.aligned, this.host);
+    livePlots.add(this.u);
     this.statsBand = document.createElement('div');
     this.statsBand.className = 'stats-band';
     this.statsBand.style.display = 'none';
@@ -314,6 +348,7 @@ export class PanelController {
     if (this.u) {
       if (this.hovered) tooltipEl().style.display = 'none';
       this.hovered = false;
+      livePlots.delete(this.u);
       this.u.destroy();
       this.u = null;
       this.statsBand = null;
@@ -330,16 +365,17 @@ export class PanelController {
   }
 
   private options(width: number, height: number): uPlot.Options {
-    const axis = cssVar('--plot-axis', '#777');
-    const grid = cssVar('--plot-grid', 'rgba(0,0,0,.07)');
-    const font = `11px ${cssVar('--font', 'sans-serif')}`;
+    const axis = () => theme().axis;
+    const grid = () => theme().grid;
+    const tick = () => theme().tick;
+    const font = `11px ${theme().font}`;
     const mode = this.settings.xMode;
     const log = this.logY;
     const series: uPlot.Series[] = [{}];
     const bands: uPlot.Band[] = [];
     this.runs.forEach((r, i) => {
       const base = 1 + i * SERIES_PER_RUN;
-      series.push({ label: r.name, stroke: r.color, width: 1.5, spanGaps: false, points: { show: false } });
+      series.push({ label: r.name, stroke: r.color, width: 1.6, spanGaps: false, points: { show: false } });
       series.push({ label: r.name + ' (raw)', stroke: withAlpha(r.color, 0.28), width: 1, points: { show: false } });
       series.push({ label: r.name + ' max', stroke: 'transparent', width: 0, points: { show: false } });
       series.push({ label: r.name + ' min', stroke: 'transparent', width: 0, points: { show: false } });
@@ -368,8 +404,9 @@ export class PanelController {
           stroke: axis,
           font,
           grid: { stroke: grid, width: 1 },
-          ticks: { stroke: grid, width: 1, size: 4 },
+          ticks: { stroke: tick, width: 1, size: 4 },
           space: 70,
+          gap: 6,
           ...(mode === 'step' ? { values: (_u: uPlot, vals: number[]) => vals.map((v) => fmtSI(v)) } : {}),
           ...(mode === 'rel' ? { values: (_u: uPlot, vals: number[]) => vals.map((v) => fmtDuration(v)) } : {}),
         },
@@ -377,14 +414,15 @@ export class PanelController {
           stroke: axis,
           font,
           grid: { stroke: grid, width: 1 },
-          ticks: { stroke: grid, width: 1, size: 4 },
-          space: 28,
+          ticks: { show: false },
+          space: 30,
+          gap: 6,
           values: (_u, vals) => vals.map((v) => (v == null ? '' : fmtTick(v))),
           size: (_u, values) => {
             if (!values) return 40;
             let m = 0;
             for (const s of values) if (s && s.length > m) m = s.length;
-            return Math.max(34, Math.ceil(m * 6.4) + 14);
+            return Math.max(34, Math.ceil(m * 6.6) + 12);
           },
         },
       ],
@@ -397,9 +435,9 @@ export class PanelController {
         },
         drag: { x: true, y: false, setScale: false, dist: 4 },
         points: {
-          size: (_u, si) => (isMain(si) ? 6 : 0),
-          width: 1.5,
-          fill: (_u, si) => (isMain(si) ? cssVar('--bg-elev', '#fff') : 'transparent'),
+          size: (_u, si) => (isMain(si) ? 7 : 0),
+          width: 2,
+          fill: (_u, si) => (isMain(si) ? theme().surface : 'transparent'),
           stroke: (u, si) => (u.series[si].stroke as string) || 'transparent',
         },
         dataIdx: (u, si, closest) => nearestDefined(u.data[si] as unknown as ArrayLike<number | null | undefined>, closest),
@@ -556,11 +594,14 @@ export class PanelController {
     }
     rows.sort((a, b) => (Number.isNaN(b.v) ? -1 : Number.isNaN(a.v) ? 1 : b.v - a.v));
     const MAX = 16;
-    let html = `<div class="tip-x">${mode === 'step' ? 'step ' + esc(fmtX(xv, mode)) : esc(fmtX(xv, mode)) + (Number.isFinite(stepAt) ? ' · step ' + fmtInt(stepAt) : '')}</div>`;
+    const head = mode === 'step' ? `<span class="tip-k">Step</span> ${esc(fmtX(xv, mode))}` : `${esc(fmtX(xv, mode))}${Number.isFinite(stepAt) ? ` <span class="tip-k">· step</span> ${fmtInt(stepAt)}` : ''}`;
+    let html = `<div class="tip-head"><span class="tip-x">${head}</span><span class="tip-key">${esc(this.label)}</span></div>`;
     for (const r of rows.slice(0, MAX)) {
-      html += `<div class="tip-row"><span class="swatch" style="background:${r.color}"></span><span class="n">${esc(r.name)}</span><span class="v">${esc(fmtNum(r.v, 5))}</span>${smooth ? `<span class="raw">${esc(fmtNum(r.raw, 4))}</span>` : ''}</div>`;
+      const stepCol = mode === 'step' ? '' : `<span class="st">${Number.isFinite(r.step) ? fmtInt(r.step) : ''}</span>`;
+      html += `<div class="tip-row"><span class="tip-sw" style="background:${r.color}"></span><span class="n">${esc(r.name)}</span><span class="v">${esc(fmtNum(r.v, 5))}</span>${smooth ? `<span class="raw" title="raw">${esc(fmtNum(r.raw, 4))}</span>` : ''}${stepCol}</div>`;
     }
-    if (rows.length > MAX) html += `<div class="faint">+${rows.length - MAX} more</div>`;
+    if (rows.length > MAX) html += `<div class="tip-more">+${rows.length - MAX} more runs</div>`;
+    if (smooth) html += `<div class="tip-foot">smoothed · <span class="raw">raw</span></div>`;
     tip.innerHTML = html;
     tip.style.display = 'block';
     const rect = u.over.getBoundingClientRect();
@@ -627,21 +668,21 @@ export class PanelController {
     c.width = src.width;
     c.height = src.height + titleH + legendH;
     const ctx = c.getContext('2d')!;
-    ctx.fillStyle = cssVar('--bg-elev', '#fff');
+    ctx.fillStyle = theme().surface;
     ctx.fillRect(0, 0, c.width, c.height);
-    ctx.fillStyle = cssVar('--fg', '#000');
-    ctx.font = `600 ${12 * dpr}px ${cssVar('--mono', 'monospace')}`;
+    ctx.fillStyle = theme().text;
+    ctx.font = `600 ${12 * dpr}px ${theme().font}`;
     ctx.textBaseline = 'middle';
     ctx.fillText(title, 8 * dpr, titleH / 2);
     ctx.drawImage(src, 0, titleH);
-    ctx.font = `${11 * dpr}px ${cssVar('--font', 'sans-serif')}`;
+    ctx.font = `${11 * dpr}px ${theme().font}`;
     const colW = c.width / 3;
     this.prepared.forEach((p, i) => {
       const x = (i % 3) * colW + 8 * dpr;
       const y = src.height + titleH + (Math.floor(i / 3) * 16 + 12) * dpr;
       ctx.fillStyle = p.run.color;
       ctx.fillRect(x, y - 1.5 * dpr, 14 * dpr, 3 * dpr);
-      ctx.fillStyle = cssVar('--fg', '#000');
+      ctx.fillStyle = theme().text;
       ctx.fillText(p.run.name, x + 20 * dpr, y, colW - 30 * dpr);
     });
     return new Promise((res) => c.toBlob(res, 'image/png'));
@@ -689,7 +730,7 @@ export function fmtTick(v: number): string {
   if (a === 0) return '0';
   if (a >= 1e5 || a < 1e-3) {
     const s = v.toExponential(1);
-    return s.replace('.0e', 'e');
+    return s.replace('.0e', 'e').replace('e+', 'e');
   }
   return String(+v.toPrecision(4));
 }

@@ -12,7 +12,7 @@ import { Link, navigate, useLocation } from '../router';
 import { CommandPalette } from './CommandPalette';
 import { ChevronRight, ChevronsUpDown, FolderKanban, Keyboard, LayoutDashboard, LogOut, Monitor, Moon, PanelLeft, Plus, Search, Settings, Shield, Sun } from './icons';
 import { ShortcutsHelp } from './ShortcutsHelp';
-import { Avatar, IconButton, MenuItem, MenuSep, Popover, Segmented, Skeleton, cx } from './ui';
+import { Avatar, EmptyState, IconButton, MenuItem, MenuSep, Popover, Segmented, Skeleton, cx } from './ui';
 
 export function Logo({ size = 22 }: { size?: number }) {
   return (
@@ -72,6 +72,7 @@ function useSidebar(): [boolean, (b: boolean) => void] {
 
 /** Logged-in app frame; mounted once so the sidebar keeps its state across pages. */
 export function AppFrame({ children }: { children: ComponentChildren }) {
+  const { refresh } = useAuth();
   const [collapsed, setCollapsed] = useSidebar();
   const [, set] = useState(0);
   useEffect(() => {
@@ -91,7 +92,7 @@ export function AppFrame({ children }: { children: ComponentChildren }) {
     <div class={cx('app', collapsed && 'sb-collapsed')}>
       <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />
       <div class="app-main">{children}</div>
-      {overlay === 'palette' && <CommandPalette onClose={() => openOverlay(null)} />}
+      {overlay === 'palette' && <CommandPalette onClose={() => openOverlay(null)} onShortcuts={() => openOverlay('shortcuts')} onLogout={() => logout(refresh)} />}
       {overlay === 'shortcuts' && <ShortcutsHelp onClose={() => openOverlay(null)} />}
     </div>
   );
@@ -156,7 +157,7 @@ function Sidebar({ collapsed, setCollapsed }: { collapsed: boolean; setCollapsed
             ))}
           {projects?.length === 0 && <div class="sb-empty">No projects yet</div>}
           {projects?.map((p) => {
-            const c = statusCounts(d.exps.get(p.id));
+            const c = { running: p.running_count ?? statusCounts(d.exps.get(p.id)).running };
             const active = activeProject === String(p.id);
             return (
               <Link
@@ -297,4 +298,26 @@ export function Page(props: { crumbs: Crumb[]; actions?: ComponentChildren; chil
 export function ThemeToggleButton() {
   const { theme } = useTheme();
   return <IconButton icon={theme === 'dark' ? Moon : Sun} label="Cycle theme (light / dark / system)" onClick={cycleTheme} />;
+}
+
+export function NotFound({ msg, body }: { msg?: string; body?: ComponentChildren }) {
+  return (
+    <Page crumbs={[{ label: 'Not found' }]}>
+      <div class="page-wrap">
+        <div class="card">
+          <EmptyState
+            icon={Search}
+            title={msg || 'Page not found'}
+            action={
+              <Link href="/" class="btn btn-secondary btn-md">
+                Back to overview
+              </Link>
+            }
+          >
+            {body || 'The page you are looking for does not exist or you do not have access to it.'}
+          </EmptyState>
+        </div>
+      </div>
+    </Page>
+  );
 }

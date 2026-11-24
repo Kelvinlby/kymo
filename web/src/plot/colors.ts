@@ -1,8 +1,8 @@
-// Run palette: distinguishable on light and dark backgrounds.
+// Run palette: colour-blind-aware ordering (blue / orange / teal / vermillion / purple / ochre / sky / magenta …),
+// mid-luminance so every colour keeps >= 3:1 contrast against both the light and the dark chart surface.
 export const PALETTE = [
-  '#4c78e0', '#e8553e', '#2ca25f', '#a259d9', '#f0a020', '#17a8b8', '#d6487e', '#7f8c2a',
-  '#8c6d4f', '#5a6fbf', '#e07b39', '#3fb68b', '#c048b0', '#b8a019', '#2b8fd6', '#cf3d3d',
-  '#6aa84f', '#9b6bd1', '#e3893b', '#41a7a1',
+  '#3d7bf0', '#f07f1a', '#12a37a', '#e0464d', '#9661e3', '#c89400', '#19a6d6', '#d9509f', '#6f9e1d', '#a8775a',
+  '#5c6ff0', '#e85f2e', '#2a9d8f', '#c2417d', '#8e8cf0', '#b8860b', '#3fa0ff', '#df6f6f', '#4c9e4c', '#9a7ad1',
 ];
 
 export function paletteColor(i: number): string {

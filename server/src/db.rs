@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-const META_MIGRATIONS: &[&str] = &[
+pub const META_MIGRATIONS: &[&str] = &[
     // v1
     r#"
     CREATE TABLE users(

@@ -2,7 +2,7 @@
 // No DOM access: used both on the main thread and inside the stats Web Worker.
 
 /**
- * Exponential moving average with TensorBoard-style debiasing.
+ * Exponential moving average with zero-bias correction (debiased EMA).
  * weight in [0, 1): 0 = no smoothing. Non-finite inputs produce NaN and do not advance the EMA.
  * last = last*w + (1-w)*v ; out = last / (1 - w^n)  where n counts finite points seen so far.
  */

@@ -1,30 +1,142 @@
-import type { ComponentChildren } from 'preact';
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { ComponentChildren, Ref } from 'preact';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { api, type MetricSummary } from '../api';
-import { compileFilter, groupKeys, lsGet, lsSet } from '../lib/format';
-import { Panel } from './Panel';
+import { ChevronDown, ChevronsDownUp, ChevronsUpDown, Columns2, Columns3, LayoutGrid, Pin, RectangleHorizontal, Search, SlidersHorizontal, WavesHorizontal } from '../components/icons';
+import { Button, Dialog, EmptyState, IconButton, Popover, SearchInput, Segmented, Switch, cx, type SegOption } from '../components/ui';
+import { compileFilter, fmtInt, fmtNum, groupKeys, lsGet, lsSet } from '../lib/format';
+import { useHotkeys } from '../lib/hotkeys';
+import { usePaletteItems } from '../lib/palette';
+import { ChartLine } from '../components/icons';
+import type { PanelController, PanelUiState } from './controller';
+import { Panel, Range, StatsRangeLine, hoveredPanel, type StatsData } from './Panel';
 import { sid, type SeriesStore } from './store';
 import type { PlotSettings, RunInfo, XMode } from './types';
 
-export const DEFAULT_SETTINGS: PlotSettings = { smoothing: 0, xMode: 'step', logY: false, clipPct: 0, maxPoints: 1000, theme: 0 };
+export const DEFAULT_SETTINGS: PlotSettings = { smoothing: 0, xMode: 'step', logY: false, clipPct: 0, maxPoints: 1000 };
 
-/** Global plot settings persisted in localStorage; theme bumps on prefers-color-scheme changes. */
+/** Card title: the key without its first-level group prefix (`train/loss` -> `loss`). */
+export function shortKey(key: string): string {
+  const i = key.indexOf('/');
+  return i > 0 ? key.slice(i + 1) : key;
+}
+export function groupOf(key: string): string {
+  const i = key.indexOf('/');
+  return i > 0 ? key.slice(0, i) : '';
+}
+
+/** Global plot settings persisted in localStorage. */
 export function usePlotSettings(): [PlotSettings, (p: Partial<PlotSettings>) => void] {
-  const [s, setS] = useState<PlotSettings>(() => ({ ...DEFAULT_SETTINGS, ...lsGet<Partial<PlotSettings>>('kymo:plot', {}), theme: 0 }));
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const fn = () => setS((x) => ({ ...x, theme: x.theme + 1 }));
-    mq.addEventListener('change', fn);
-    return () => mq.removeEventListener('change', fn);
-  }, []);
-  const update = (p: Partial<PlotSettings>) =>
-    setS((x) => {
-      const n = { ...x, ...p };
-      const { theme: _t, ...persist } = n;
-      lsSet('kymo:plot', persist);
-      return n;
-    });
+  const [s, setS] = useState<PlotSettings>(() => {
+    const { theme: _t, ...saved } = lsGet<Partial<PlotSettings> & { theme?: number }>('kymo:plot', {});
+    return { ...DEFAULT_SETTINGS, ...saved };
+  });
+  const update = useCallback(
+    (p: Partial<PlotSettings>) =>
+      setS((x) => {
+        const n = { ...x, ...p };
+        lsSet('kymo:plot', n);
+        if (n.smoothing > 0) lsSet('kymo:lastSmooth', n.smoothing);
+        return n;
+      }),
+    [],
+  );
   return [s, update];
+}
+
+export type Layout = 'auto' | 1 | 2 | 3;
+export function useLayout(): [Layout, (l: Layout) => void] {
+  const [l, setL] = useState<Layout>(() => lsGet<Layout>('kymo:layout', 'auto'));
+  return [
+    l,
+    (n: Layout) => {
+      setL(n);
+      lsSet('kymo:layout', n);
+    },
+  ];
+}
+
+const X_OPTIONS: SegOption<XMode>[] = [
+  { value: 'step', label: 'Step' },
+  { value: 'wall', label: 'Time' },
+  { value: 'rel', label: 'Relative' },
+];
+const LAYOUT_OPTIONS: SegOption<Layout>[] = [
+  { value: 'auto', icon: LayoutGrid, tip: 'Auto columns' },
+  { value: 1, icon: RectangleHorizontal, tip: '1 column' },
+  { value: 2, icon: Columns2, tip: '2 columns' },
+  { value: 3, icon: Columns3, tip: '3 columns' },
+];
+
+/** Apply slider values at most once per frame. */
+function useThrottled(apply: (v: number) => void) {
+  const pending = useRef<number | null>(null);
+  return (v: number) => {
+    const first = pending.current === null;
+    pending.current = v;
+    if (!first) return;
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      const val = pending.current!;
+      pending.current = null;
+      apply(val);
+    };
+    requestAnimationFrame(go);
+    setTimeout(go, 50); // rAF stalls in background tabs
+  };
+}
+
+export function SmoothingControl({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  const push = useThrottled(onChange);
+  const set = (x: number) => {
+    const c = Math.max(0, Math.min(0.99, Math.round(x * 100) / 100));
+    setV(c);
+    push(c);
+  };
+  return (
+    <Popover
+      placement="bottom-start"
+      width={280}
+      class="pad"
+      trigger={(p) => (
+        <Button btnRef={p.ref as Ref<HTMLButtonElement>} size="sm" variant="secondary" class="tb-btn" icon={WavesHorizontal} onClick={p.toggle} aria-expanded={p.open} data-tip="Smoothing (EMA)" data-kbd="s">
+          <span class={cx('tb-val', v === 0 && 'off')}>{v === 0 ? 'Off' : v.toFixed(2)}</span>
+        </Button>
+      )}
+    >
+      {() => (
+        <>
+          <div class="pop-title">Smoothing (EMA)</div>
+          <div class="pop-desc">Debiased exponential moving average. Raw values stay visible as a faint line.</div>
+          <div class="row" style={{ gap: 12 }}>
+            <Range value={v} onInput={set} />
+            <input
+              class="input input-sm mono"
+              style={{ width: 70, textAlign: 'right' }}
+              type="number"
+              min={0}
+              max={0.99}
+              step={0.01}
+              value={v}
+              aria-label="Smoothing weight"
+              data-autofocus
+              onChange={(e) => set(Number((e.target as HTMLInputElement).value) || 0)}
+            />
+          </div>
+          <div class="row" style={{ marginTop: 12, gap: 6 }}>
+            {[0, 0.6, 0.8, 0.9, 0.95].map((x) => (
+              <Button key={x} size="xs" variant={v === x ? 'primary' : 'secondary'} onClick={() => set(x)}>
+                {x === 0 ? 'Off' : x}
+              </Button>
+            ))}
+          </div>
+        </>
+      )}
+    </Popover>
+  );
 }
 
 export function PlotToolbar(props: {
@@ -33,102 +145,120 @@ export function PlotToolbar(props: {
   filter: string;
   setFilter: (s: string) => void;
   filterError?: string;
+  filterRef?: Ref<HTMLInputElement>;
   live: boolean;
   setLive: (b: boolean) => void;
   hasRunning: boolean;
   shown: number;
   total: number;
   onCollapseAll?: (c: boolean) => void;
-  extra?: ComponentChildren;
+  allCollapsed?: boolean;
+  layout: Layout;
+  setLayout: (l: Layout) => void;
+  start?: ComponentChildren;
 }) {
   const { settings: s, update } = props;
-  // smooth the slider: apply at most once per frame
-  const pendingSmooth = useRef<number | null>(null);
-  const [smooth, setSmooth] = useState(s.smoothing);
-  useEffect(() => setSmooth(s.smoothing), [s.smoothing]);
-  const onSmooth = (v: number) => {
-    setSmooth(v);
-    const first = pendingSmooth.current === null;
-    pendingSmooth.current = v;
-    if (!first) return;
-    let done = false;
-    const apply = () => {
-      if (done) return;
-      done = true;
-      const val = pendingSmooth.current!;
-      pendingSmooth.current = null;
-      update({ smoothing: val });
-    };
-    requestAnimationFrame(apply);
-    setTimeout(apply, 50); // rAF stalls in background tabs
-  };
+  const displayCount = (s.logY ? 1 : 0) + (s.clipPct > 0 ? 1 : 0) + (s.maxPoints !== 1000 ? 1 : 0);
   return (
-    <div class="ws-toolbar">
-      <input
-        type="search"
-        class={'filter-input' + (props.filterError ? ' invalid' : '')}
-        placeholder="Filter metrics (regex)"
-        title={props.filterError || 'Regex, case-insensitive. /pattern/flags also works.'}
+    <div class="plot-toolbar" role="toolbar" aria-label="Chart controls">
+      {props.start}
+      <SearchInput
+        class="tb-search"
+        icon={Search}
         value={props.filter}
-        onInput={(e) => props.setFilter((e.target as HTMLInputElement).value)}
+        onInput={props.setFilter}
+        placeholder="Filter metrics (regex)"
+        kbd="/"
+        invalid={!!props.filterError}
+        title={props.filterError ? 'Invalid regex (matching as plain text): ' + props.filterError : 'Regular expression, case-insensitive. /pattern/flags also works.'}
+        inputRef={props.filterRef}
+        onKeyDown={(e) => e.key === 'Escape' && props.filter && (e.stopPropagation(), props.setFilter(''))}
       />
-      <span class="ctl" title="EMA smoothing weight (debiased, like TensorBoard)">
-        smoothing
-        <input type="range" min={0} max={0.99} step={0.01} value={smooth} onInput={(e) => onSmooth(Number((e.target as HTMLInputElement).value))} />
-        <span class="val mono">{smooth.toFixed(2)}</span>
-      </span>
-      <span class="ctl">
-        x
-        <select value={s.xMode} onChange={(e) => update({ xMode: (e.target as HTMLSelectElement).value as XMode })}>
-          <option value="step">step</option>
-          <option value="wall">wall time</option>
-          <option value="rel">relative time</option>
-        </select>
-      </span>
-      <label class="ctl check">
-        <input type="checkbox" checked={s.logY} onChange={(e) => update({ logY: (e.target as HTMLInputElement).checked })} /> log y
-      </label>
-      <span class="ctl" title="Ignore the top and bottom p% of values when computing the y range">
-        clip outliers
-        <select value={s.clipPct} onChange={(e) => update({ clipPct: Number((e.target as HTMLSelectElement).value) })}>
-          <option value={0}>off</option>
-          <option value={0.1}>0.1%</option>
-          <option value={0.5}>0.5%</option>
-          <option value={1}>1%</option>
-          <option value={2}>2%</option>
-          <option value={5}>5%</option>
-        </select>
-      </span>
-      <span class="ctl" title="Points per series (server-side downsampling)">
-        res
-        <select value={s.maxPoints} onChange={(e) => update({ maxPoints: Number((e.target as HTMLSelectElement).value) })}>
-          <option value={500}>500</option>
-          <option value={1000}>1k</option>
-          <option value={2000}>2k</option>
-          <option value={5000}>5k</option>
-        </select>
-      </span>
-      <label class="ctl check" title={props.hasRunning ? 'Poll running experiments every 5 s' : 'No running experiments selected'}>
-        <input type="checkbox" checked={props.live} onChange={(e) => props.setLive((e.target as HTMLInputElement).checked)} /> live
-        {props.live && props.hasRunning && <span class="badge running">on</span>}
-      </label>
-      {props.extra}
+      <Segmented ariaLabel="X axis" value={s.xMode} options={X_OPTIONS} onChange={(v) => update({ xMode: v })} />
+      <SmoothingControl value={s.smoothing} onChange={(v) => update({ smoothing: v })} />
+      <Popover
+        placement="bottom-start"
+        width={300}
+        class="pad"
+        trigger={(p) => (
+          <Button btnRef={p.ref as Ref<HTMLButtonElement>} size="sm" variant="secondary" class="tb-btn tb-display" icon={SlidersHorizontal} iconRight={ChevronDown} onClick={p.toggle} aria-expanded={p.open} aria-label="Display options" data-tip="Log scale, outliers, resolution, layout">
+            Display{displayCount > 0 && <span class="tb-val"> · {displayCount}</span>}
+          </Button>
+        )}
+      >
+        {() => (
+          <>
+            <Switch label="Log scale (y)" description="Values ≤ 0 are hidden on a log axis." checked={s.logY} onChange={(b) => update({ logY: b })} />
+            <div class="pop-section">
+              <div class="pop-label">
+                <span>Clip outliers</span>
+                <span class="faint">ignore top &amp; bottom %</span>
+              </div>
+              <Segmented
+                ariaLabel="Clip outliers"
+                value={s.clipPct}
+                onChange={(v) => update({ clipPct: v })}
+                options={[0, 0.5, 1, 2, 5].map((v) => ({ value: v, label: v === 0 ? 'Off' : v + '%' }))}
+              />
+            </div>
+            <div class="pop-section">
+              <div class="pop-label">
+                <span>Resolution</span>
+                <span class="faint">points per series</span>
+              </div>
+              <Segmented
+                ariaLabel="Resolution"
+                value={s.maxPoints}
+                onChange={(v) => update({ maxPoints: v })}
+                options={[500, 1000, 2000, 5000].map((v) => ({ value: v, label: v >= 1000 ? v / 1000 + 'k' : String(v) }))}
+              />
+            </div>
+            <div class="pop-section">
+              <div class="pop-label">
+                <span>Layout</span>
+              </div>
+              <Segmented ariaLabel="Layout" value={props.layout} onChange={props.setLayout} options={LAYOUT_OPTIONS.map((o) => ({ ...o, label: o.value === 'auto' ? 'Auto' : String(o.value), icon: undefined }))} />
+            </div>
+          </>
+        )}
+      </Popover>
       <span class="spacer" />
-      <span class="faint" style={{ fontSize: 12 }}>
-        {props.shown === props.total ? `${props.total} metrics` : `${props.shown} / ${props.total} metrics`}
-      </span>
+      <span class="tb-count">{props.shown === props.total ? `${fmtInt(props.total)} metrics` : `${fmtInt(props.shown)} of ${fmtInt(props.total)} metrics`}</span>
+      <Segmented class="tb-layout" ariaLabel="Layout" value={props.layout} onChange={props.setLayout} options={LAYOUT_OPTIONS} />
       {props.onCollapseAll && (
-        <>
-          <button class="small ghost" onClick={() => props.onCollapseAll!(false)}>
-            expand all
-          </button>
-          <button class="small ghost" onClick={() => props.onCollapseAll!(true)}>
-            collapse all
-          </button>
-        </>
+        <IconButton
+          icon={props.allCollapsed ? ChevronsUpDown : ChevronsDownUp}
+          label={props.allCollapsed ? 'Expand all groups' : 'Collapse all groups'}
+          onClick={() => props.onCollapseAll!(!props.allCollapsed)}
+        />
       )}
+      <button
+        type="button"
+        class={cx('live-pill', props.live && 'on', props.live && props.hasRunning && 'active')}
+        aria-pressed={props.live}
+        onClick={() => props.setLive(!props.live)}
+        data-tip={props.live ? (props.hasRunning ? 'Live: polling running experiments every 5 s. Click to pause.' : 'Live is on; no running experiments are shown') : 'Live updates paused. Click to resume.'}
+      >
+        <span class="live-dot" aria-hidden="true" />
+        {props.live ? 'Live' : 'Paused'}
+      </button>
     </div>
   );
+}
+
+/** Workspace / experiment chart hotkeys: / s l x f. */
+export function usePlotHotkeys(settings: PlotSettings, update: (p: Partial<PlotSettings>) => void, filterRef: { current: HTMLInputElement | null }, extra: Record<string, () => void> = {}) {
+  useHotkeys({
+    '/': () => {
+      filterRef.current?.focus();
+      filterRef.current?.select();
+    },
+    s: () => update({ smoothing: settings.smoothing > 0 ? 0 : lsGet('kymo:lastSmooth', 0.6) || 0.6 }),
+    l: () => update({ logY: !settings.logY }),
+    x: () => update({ xMode: settings.xMode === 'step' ? 'wall' : settings.xMode === 'wall' ? 'rel' : 'step' }),
+    f: () => hoveredPanel()?.open(),
+    ...extra,
+  });
 }
 
 export function PanelGrid(props: {
@@ -139,38 +269,173 @@ export function PanelGrid(props: {
   syncKey: string;
   collapsed: Set<string>;
   toggle: (g: string) => void;
+  pins: string[];
+  togglePin: (k: string) => void;
+  layout: Layout;
+  allKeys: string[];
+  onClearFilter?: () => void;
 }) {
   const groups = useMemo(() => groupKeys(props.keys), [props.keys]);
-  if (!props.keys.length) return <div class="empty">No metrics match.</div>;
+  const [fs, setFs] = useState<string | null>(null);
+  const openFs = useCallback((k: string) => setFs(k), []);
+  const pinned = useMemo(() => props.pins.filter((k) => props.allKeys.includes(k)), [props.pins, props.allKeys]);
+  const gridCls = cx('panel-grid', props.layout !== 'auto' && 'cols-' + props.layout);
+
+  usePaletteItems(() =>
+    props.allKeys.map((k) => ({
+      id: 'm' + k,
+      group: 'Metrics',
+      title: shortKey(k),
+      sub: k,
+      icon: ChartLine,
+      run: () => setFs(k),
+    })),
+  );
+
+  const card = (k: string, inPinned: boolean) => (
+    <Panel
+      key={(inPinned ? 'pin:' : '') + k}
+      metricKey={k}
+      title={shortKey(k)}
+      group={inPinned ? groupOf(k) || undefined : undefined}
+      runs={props.runs}
+      settings={props.settings}
+      store={props.store}
+      syncKey={props.syncKey}
+      pinned={props.pins.includes(k)}
+      onTogglePin={props.togglePin}
+      onFullscreen={openFs}
+    />
+  );
+
   return (
-    <div>
+    <div class="groups">
+      {pinned.length > 0 && (
+        <section>
+          <button type="button" class={cx('group-head', props.collapsed.has('\u0000pinned') && 'collapsed')} onClick={() => props.toggle('\u0000pinned')} aria-expanded={!props.collapsed.has('\u0000pinned')}>
+            <ChevronDown size={15} class="chev" aria-hidden="true" />
+            <Pin size={13} class="g-icon" aria-hidden="true" />
+            <span>Pinned</span>
+            <span class="g-count">{pinned.length}</span>
+            <span class="g-line" />
+          </button>
+          {!props.collapsed.has('\u0000pinned') && <div class="group-body"><div class={gridCls}>{pinned.map((k) => card(k, true))}</div></div>}
+        </section>
+      )}
+      {!props.keys.length && (
+        <div class="card">
+          <EmptyState
+            icon={Search}
+            title={props.allKeys.length ? 'No metrics match the filter' : 'No metrics yet'}
+            action={props.allKeys.length && props.onClearFilter ? <Button onClick={props.onClearFilter}>Clear filter</Button> : undefined}
+            compact
+          >
+            {props.allKeys.length ? 'Try a broader regular expression.' : 'Metrics appear here as soon as the first points are logged.'}
+          </EmptyState>
+        </div>
+      )}
       {groups.map((g) => {
+        const name = g.name || 'General';
         const collapsed = props.collapsed.has(g.name);
         return (
-          <section class="group" key={g.name}>
-            <div class={'group-head' + (collapsed ? ' collapsed' : '')} onClick={() => props.toggle(g.name)}>
-              <span class="chev">▾</span>
-              <span>{g.name || 'ungrouped'}</span>
-              <span class="count">{g.keys.length}</span>
-            </div>
+          <section key={g.name}>
+            <button type="button" class={cx('group-head', collapsed && 'collapsed')} onClick={() => props.toggle(g.name)} aria-expanded={!collapsed}>
+              <ChevronDown size={15} class="chev" aria-hidden="true" />
+              <span>{name}</span>
+              <span class="g-count">{g.keys.length}</span>
+              <span class="g-line" />
+            </button>
             {!collapsed && (
-              <div class="panel-grid">
-                {g.keys.map((k) => (
-                  <Panel key={k} metricKey={k} runs={props.runs} settings={props.settings} store={props.store} syncKey={props.syncKey} />
-                ))}
+              <div class="group-body">
+                <div class={gridCls}>{g.keys.map((k) => card(k, false))}</div>
               </div>
             )}
           </section>
         );
       })}
+      {fs && <FullscreenChart metricKey={fs} runs={props.runs} settings={props.settings} store={props.store} syncKey={props.syncKey + ':fs'} onClose={() => setFs(null)} pinned={props.pins.includes(fs)} togglePin={props.togglePin} />}
     </div>
   );
 }
 
-/** Metric-key filter + collapsed groups, persisted per scope. */
+function FullscreenChart(props: { metricKey: string; runs: RunInfo[]; settings: PlotSettings; store: SeriesStore; syncKey: string; onClose: () => void; pinned: boolean; togglePin: (k: string) => void }) {
+  const [st, setSt] = useState<{ s: StatsData | null; ui: PanelUiState } | null>(null);
+  const sink = useCallback((s: StatsData | null, ui: PanelUiState) => setSt({ s, ui }), []);
+  const ctrlRef = useRef<PanelController | null>(null);
+  const g = groupOf(props.metricKey);
+  return (
+    <Dialog
+      size="full"
+      class="fs-dialog"
+      title={shortKey(props.metricKey)}
+      description={
+        <>
+          {g ? <span class="mono">{g}</span> : 'General'} · {props.runs.length} {props.runs.length === 1 ? 'run' : 'runs'} · drag to zoom, shift-drag to select a range
+        </>
+      }
+      onClose={props.onClose}
+    >
+      <Panel
+        metricKey={props.metricKey}
+        title={shortKey(props.metricKey)}
+        runs={props.runs}
+        settings={props.settings}
+        store={props.store}
+        syncKey={props.syncKey}
+        pinned={props.pinned}
+        onTogglePin={props.togglePin}
+        full
+        statsSink={sink}
+        ctrlRef={ctrlRef}
+      />
+      <aside class="fs-side" aria-label="Statistics">
+        <div class="fs-side-head">
+          <b>Statistics</b>
+        </div>
+        {st?.ui && <StatsRangeLine ui={st.ui} xMode={props.settings.xMode} approx={!!st.s?.ds.some(Boolean)} onClear={() => ctrlRef.current?.setStatsRange(null)} />}
+        {!st?.s && <div class="fs-stat faint">Computing…</div>}
+        {st?.s?.runs.map((run, i) => {
+          const s = st.s!.stats[i];
+          const cells: [string, string][] = [
+            ['last', fmtNum(s.last)],
+            ['min', fmtNum(s.min)],
+            ['max', fmtNum(s.max)],
+            ['mean', fmtNum(s.mean)],
+            ['std', fmtNum(s.std)],
+            ['median', fmtNum(s.median)],
+            ['p5', fmtNum(s.p5)],
+            ['p95', fmtNum(s.p95)],
+            ['count', fmtInt(s.count)],
+          ];
+          return (
+            <div class="fs-stat" key={run.id}>
+              <div class="fs-stat-name">
+                <span class="swatch" style={{ background: run.color }} />
+                <span>{run.name}</span>
+              </div>
+              <div class="fs-stat-grid">
+                {cells.map(([k, v]) => (
+                  <div key={k}>
+                    <span class="k">{k}</span>
+                    <span class="v" title={v}>
+                      {v}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </aside>
+    </Dialog>
+  );
+}
+
+/** Metric-key filter, collapsed groups, pinned metrics; persisted per scope. */
 export function useGridState(scope: string, allKeys: string[]) {
   const [filter, setFilterRaw] = useState<string>(() => lsGet('kymo:filter:' + scope, ''));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(lsGet<string[]>('kymo:collapsed:' + scope, [])));
+  const [pins, setPins] = useState<string[]>(() => lsGet<string[]>('kymo:pins:' + scope, []));
   const setFilter = (f: string) => {
     setFilterRaw(f);
     lsSet('kymo:filter:' + scope, f);
@@ -185,10 +450,21 @@ export function useGridState(scope: string, allKeys: string[]) {
     else s.add(g);
     saveCollapsed(s);
   };
+  const togglePin = useCallback(
+    (k: string) =>
+      setPins((p) => {
+        const n = p.includes(k) ? p.filter((x) => x !== k) : [...p, k];
+        lsSet('kymo:pins:' + scope, n);
+        return n;
+      }),
+    [scope],
+  );
   const compiled = useMemo(() => compileFilter(filter), [filter]);
   const keys = useMemo(() => allKeys.filter((k) => compiled.test(k)), [allKeys, compiled]);
-  const collapseAll = (c: boolean) => saveCollapsed(c ? new Set(groupKeys(keys).map((g) => g.name)) : new Set());
-  return { filter, setFilter, filterError: compiled.error, collapsed, toggle, keys, collapseAll };
+  const groupNames = useMemo(() => groupKeys(keys).map((g) => g.name), [keys]);
+  const allCollapsed = groupNames.length > 0 && groupNames.every((g) => collapsed.has(g));
+  const collapseAll = (c: boolean) => saveCollapsed(c ? new Set(groupNames) : new Set());
+  return { filter, setFilter, filterError: compiled.error, collapsed, toggle, keys, collapseAll, allCollapsed, pins, togglePin };
 }
 
 /**

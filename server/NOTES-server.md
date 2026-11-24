@@ -34,6 +34,46 @@ or against a running server with `KYMO_HOST=... KYMO_API_KEY=kymo_... kymo-bench
 
 ## Decisions / deviations from SPEC (all backward compatible)
 
+### Sharing (meta schema v2)
+
+* Migration v2 adds `projects.everyone` (`NULL|'viewer'|'editor'`) and `project_members(project_id, user_id, role)`;
+  `shared=1` rows become `everyone='viewer'`. The old `shared` column is kept but ignored. Verified on a
+  `VACUUM INTO` snapshot of `demo/data` (v1 → v2, `integrity_check` ok); restarting a migrated dir is a no-op.
+* Effective role: `owner` (owner) > `admin` (admin user) > max(member role, everyone role). No role → 404 everywhere
+  (existence is not leaked). Viewer: read. Editor: read + PATCH/DELETE experiments + ingest. Owner/admin only:
+  PATCH/DELETE project, PUT sharing. Editor/viewer trying a forbidden write → 403.
+* Project objects (`GET /projects`, `GET/POST/PATCH /projects/{id}`):
+  `{id, name, description, everyone, shared (= everyone != null, deprecated), member_count, role,
+  owner: {id, username, display_name}, created_at, experiment_count, running_count, last_activity}`.
+  `PATCH` still accepts the deprecated `shared: bool` (true → everyone=viewer if unset, false → everyone=null).
+* `GET /api/v1/users` (full cookie session only; token → `403 token_not_allowed`) →
+  `[{id, username, display_name}]`, active (non-disabled) users, sorted by username.
+* `GET /api/v1/projects/{id}/sharing` (anyone who can read the project, incl. tokens) and
+  `PUT /api/v1/projects/{id}/sharing {"everyone": null|"viewer"|"editor", "members": [{"user_id", "role"}]}`
+  (owner/admin, replaces everything) both return
+  `{"everyone": ..., "members": [{"user": {id, username, display_name}, "role": "viewer"|"editor"}]}` (sorted by username).
+  PUT errors (400): `invalid_role`, `duplicate_member`, `owner_not_member`, `unknown_user`, `too_many_members` (>10000).
+  Omitted fields mean null / no members.
+* `GET /experiments/{id}` also returns `role` (caller's project role) next to `can_edit`.
+* Ingest `"project": "owner/name"`: needs editor+ on that project (admin always), else
+  `403 project_forbidden` — also when it doesn't exist (never auto-created). Experiments inside it are auto-created.
+  `"<own username>/name"` is the same as `"name"`. The ingest name→experiment cache is cleared on every sharing
+  change, project/experiment rename/delete and user deletion, so revocations apply to the next request.
+
+### Hand-written ingest
+
+* Nested metric objects are flattened with `/` (depth ≤ 16), keys borrowed when not nested.
+* Steps may be omitted per point (or in the top-level shorthand). Such requests travel to the shard writer with
+  point indices; the writer (single thread per shard, so serialized per experiment) assigns `last_step + 1` of the
+  experiment in request order, where explicit steps earlier in the same request also advance `last_step`.
+  The first auto step of an empty experiment is 0. Points that end up with no accepted value consume no step.
+  The flat SDK path is unchanged (explicit steps; one `any()` check per commit group in the writer).
+* Single-point shorthand: top-level `metrics` (+ optional `step`, `ts`), may be combined with `points`
+  (it then counts as one more point). A second top-level `metrics` key is a 400. `step: null` = missing.
+* Response: `{"ok", "experiment_id", "accepted", "dropped", "dropped_keys": [up to 20 distinct example keys]}`
+  (always present, possibly empty). Dropped = strings other than NaN/±Infinity, null, arrays, invalid keys.
+* Any `Content-Type` is accepted (so `curl -d '{...}'` works); bearer requests need no CSRF header.
+
 * **Timestamps**: `created_at`, `updated_at`, `expires_at`, `last_*_at` are RFC 3339 UTC strings with ms
   (`2026-11-23T10:00:00.123Z`). Point `ts` / `last_ts` are unix seconds (float) everywhere.
 * **CSRF**: `X-Kymo-CSRF: 1` is required on *every* non-GET/HEAD/OPTIONS `/api` request that has no
@@ -60,8 +100,7 @@ or against a running server with `KYMO_HOST=... KYMO_API_KEY=kymo_... kymo-bench
 * Ingest: `points` may be empty or missing — project/experiment are still resolved/created and
   `config` (shallow merge), `status`, `host` applied. Any valid status is applied in arrival order
   (`running` after `finished` is allowed). Also accepted: `deflate` bodies, `"nan"`/`"inf"`/`"-inf"`/
-  `"+Infinity"` strings, integral float steps. A point without `step` is a 400; a missing `ts` = server time.
-  A metric value that is `null`, an object/array or another string is dropped and counted.
+  `"+Infinity"` strings, integral float steps (a fractional step is a 400); a missing `ts` = server time.
   `updated_at` is written at most once per second per experiment (plus on every config/status/host change).
 * Summary `count` counts all points (including NaN); `min`/`max` are over finite values only (null if none);
   `last_value` can be null (NaN/Inf).
@@ -106,7 +145,24 @@ or against a running server with `KYMO_HOST=... KYMO_API_KEY=kymo_... kymo-bench
 * mimalloc, fat LTO, codegen-units=1, panic=abort. Response compression (gzip/br/zstd/deflate, fastest level)
   via tower-http.
 
-## Benchmark (release, in-process, this dev box: Ryzen 5 9600X 6C/12T, NVMe, 12 shards)
+## Benchmark after the sharing / hand-written-ingest change (same box, same command)
+
+```
+ingest grid: 200.0M values in 25.8s = 7.76M values/s (request p50 151 ms, p99 503 ms)   # 2nd run 7.75M/s
+query 1 series x 50000 pts: server p50 0.20 / p99 0.24 ms
+query 20 series x 50000 pts (compare): server p50 0.96 / p99 1.20 ms
+query 50 keys of one experiment (dashboard): server p50 1.13 / p99 1.31 ms
+query 1-series mixed: 32 concurrent clients, 16448 queries/s, p50 1.52 ms, p99 12.56 ms
+ingest big: 20.0M values = 7.90M values/s
+query 20 series x 1M pts: server p50 3.03 / p99 4.11 ms
+query 1 series x 1M pts: server p50 0.32 / p99 0.48 ms
+```
+Ingest is within run-to-run noise of the earlier 7.77–7.88M values/s (a first run before trimming the hot path
+showed 7.6–7.7M/s; the per-request max-step pass was then moved into the writer and only runs when a commit group
+contains a server-assigned-step request, and the metric key check became a byte scan). Parser micro benchmark:
+25.6 ns/value for a 100k-value SDK-style body (`cargo test --release --lib perf_parse -- --ignored --nocapture`).
+
+## Benchmark (initial version, release, in-process, this dev box: Ryzen 5 9600X 6C/12T, NVMe, 12 shards)
 
 `cargo run --release --bin kymo-bench` (client JSON generation + zstd compression runs on the same 12 cores,
 so server-only throughput is higher than shown):

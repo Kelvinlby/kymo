@@ -2,7 +2,7 @@
 // Kymo mock API server (no dependencies). Implements SPEC.md §2 (auth, loosely) and §4 (read API)
 // with synthetic data so the web UI can be developed without the Rust server.
 //
-//   node mock/server.mjs [--port=8080] [--fresh] [--strict] [--latency=MS]
+//   node mock/server.mjs [--port=8080] [--fresh] [--strict] [--latency=MS] [--dist=DIR]
 //
 //   default   : seeded users, passkeys are not enforced for the admin (so the UI can be driven
 //               by a browser without an authenticator).
@@ -34,7 +34,7 @@ const PORT = Number(args.port || process.env.PORT || 8080);
 const FRESH = !!args.fresh;
 const STRICT = FRESH || !!args.strict;
 const LATENCY = Number(args.latency || 0);
-const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
+const DIST = args.dist ? path.resolve(String(args.dist)) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');
 
 // ---------------------------------------------------------------------------------------------
 // helpers
@@ -127,7 +127,7 @@ function makeKeys(nLayers) {
     { key: 'eval/loss', kind: 'loss', stride: 1000, off: 0.08 },
     { key: 'eval/acc', kind: 'acc', stride: 1000 },
     { key: 'eval/ppl', kind: 'ppl', stride: 1000, off: 0.08 },
-    { key: 'sys/gpu_util', kind: 'util', stride: 10 },
+    { key: 'sys/util', kind: 'util', stride: 10 },
     { key: 'sys/mem_gb', kind: 'mem', stride: 10 },
     { key: 'epoch', kind: 'epoch', stride: 100 },
   ];
@@ -304,9 +304,13 @@ function querySeries(exp, ki, maxPoints, stepMin, stepMax) {
 function seedData() {
   const admin = addUser('admin', 'adminadmin123', true, 'Admin');
   const alice = addUser('alice', 'alicealice123', false, 'Alice');
+  const bob = addUser('bob', 'bobbobbob123', false, 'Bob Martin');
+  const carol = addUser('carol', 'carolcarol123', false, 'Carol Diaz');
+  addUser('dmitri', 'dmitridmitri1', false, 'Dmitri Volkov');
+  addUser('erin', 'erinerin1234', false, 'Erin Okafor');
   const now = Date.now() / 1000;
-  const mkProject = (owner, name, description, shared) => {
-    const p = { id: id(), owner_id: owner.id, name, description, shared, created_at: new Date((now - 86400 * 30) * 1000).toISOString() };
+  const mkProject = (owner, name, description, everyone, members = []) => {
+    const p = { id: id(), owner_id: owner.id, name, description, everyone, members, created_at: new Date((now - 86400 * 30) * 1000).toISOString() };
     db.projects.push(p);
     return p;
   };
@@ -335,7 +339,11 @@ function seedData() {
     return e;
   };
 
-  const big = mkProject(admin, 'llm-pretrain', '7B decoder-only pretraining sweeps', false);
+  const big = mkProject(admin, 'llm-pretrain', '7B decoder-only pretraining sweeps', null, [
+    { user_id: alice.id, role: 'editor' },
+    { user_id: bob.id, role: 'viewer' },
+    { user_id: carol.id, role: 'viewer' },
+  ]);
   const keys200 = makeKeys(47);
   const lrs = [3e-4, 6e-4, 1e-4, 3e-4, 1.5e-4, 6e-4, 3e-4, 2e-4, 4e-4, 3e-4];
   for (let i = 0; i < 10; i++) {
@@ -362,10 +370,10 @@ function seedData() {
         model: { d_model: 4096, n_layers: 32, n_heads: 32, rope_theta: i % 2 ? 10000 : 500000 },
         data: { dataset: 'fineweb-edu', tokens: '2T' },
       },
-      host: `gpu-node-${10 + i}`,
+      host: `node-${10 + i}`,
     });
   }
-  const vision = mkProject(admin, 'vision-sweep', 'ViT-B/16 ImageNet hyperparameter sweep', true);
+  const vision = mkProject(admin, 'vision-sweep', 'Image classifier hyperparameter sweep', 'viewer');
   const keys30 = makeKeys(4).slice(0, 30);
   for (let i = 0; i < 6; i++) {
     mkExp(vision, `vit-b16-wd${(0.05 * (i + 1)).toFixed(2)}`, {
@@ -380,7 +388,7 @@ function seedData() {
       config: { lr: 1e-3, weight_decay: 0.05 * (i + 1), batch_size: 4096, warmup: 5000, epochs: 300, model: { patch: 16, dim: 768 } },
     });
   }
-  const rl = mkProject(alice, 'rl-agents', 'PPO on procgen', true);
+  const rl = mkProject(alice, 'rl-agents', 'Policy optimisation on procedurally generated levels', 'viewer', [{ user_id: bob.id, role: 'editor' }]);
   for (let i = 0; i < 4; i++) {
     mkExp(rl, `ppo-seed${i}`, {
       status: 'finished',
@@ -394,7 +402,7 @@ function seedData() {
       config: { lr: 2.5e-4, gamma: 0.99, clip: 0.2, warmup: 100, epochs: 10 },
     });
   }
-  mkProject(alice, 'scratch', 'empty project', false);
+  mkProject(alice, 'scratch', 'empty project', null);
 }
 
 if (FRESH) {
@@ -466,27 +474,46 @@ function checkUsername(u) {
   if (db.users.some((x) => x.username === u)) err(409, 'username_taken', 'username already taken');
 }
 
-function canRead(ctx, p) {
-  return ctx.user.is_admin || p.owner_id === ctx.user.id || p.shared;
+// SPEC §1: owner | admin | editor | viewer | null (no access). Explicit member role wins when higher.
+const RANK = { viewer: 1, editor: 2, admin: 3, owner: 4 };
+function roleOf(user, p) {
+  if (p.owner_id === user.id) return 'owner';
+  if (user.is_admin) return 'admin';
+  const m = (p.members || []).find((x) => x.user_id === user.id);
+  const a = m ? m.role : null;
+  const b = p.everyone || null;
+  if (!a) return b;
+  if (!b) return a;
+  return RANK[a] >= RANK[b] ? a : b;
 }
-function canWrite(ctx, p) {
-  return ctx.user.is_admin || p.owner_id === ctx.user.id;
-}
-function getProject(ctx, pid, write = false) {
+const atLeast = (r, need) => !!r && RANK[r] >= RANK[need];
+function getProject(ctx, pid, level = 'viewer') {
+  if (level === true) level = 'editor';
   const p = db.projects.find((x) => x.id === Number(pid));
-  if (!p || !canRead(ctx, p)) err(404, 'not_found', 'project not found');
-  if (write && !canWrite(ctx, p)) err(403, 'forbidden', 'read-only project');
+  const r = p && roleOf(ctx.user, p);
+  if (!p || !r) err(404, 'not_found', 'project not found');
+  if (!atLeast(r, level === 'manage' ? 'admin' : level)) err(403, 'forbidden', level === 'manage' ? 'only the owner can do this' : 'read-only project');
   return p;
 }
 function getExp(ctx, eid, write = false) {
   const e = db.experiments.find((x) => x.id === Number(eid));
   if (!e) err(404, 'not_found', 'experiment not found');
-  getProject(ctx, e.project_id, write);
+  getProject(ctx, e.project_id, write ? 'editor' : 'viewer');
   return e;
 }
 
 const userPublic = (u) => u && { id: u.id, username: u.username, display_name: u.display_name, is_admin: u.is_admin };
-function projectJson(p) {
+const userRef = (u) => ({ id: u.id, username: u.username, display_name: u.display_name });
+function sharingJson(p) {
+  return {
+    everyone: p.everyone || null,
+    members: (p.members || [])
+      .map((m) => ({ u: db.users.find((x) => x.id === m.user_id), role: m.role }))
+      .filter((m) => m.u)
+      .map((m) => ({ user: userRef(m.u), role: m.role })),
+  };
+}
+function projectJson(p, ctx) {
   const exps = db.experiments.filter((e) => e.project_id === p.id);
   const owner = db.users.find((u) => u.id === p.owner_id);
   let last = null;
@@ -498,10 +525,13 @@ function projectJson(p) {
     id: p.id,
     name: p.name,
     description: p.description,
-    shared: p.shared,
-    owner: { id: owner.id, username: owner.username },
+    everyone: p.everyone || null,
+    member_count: (p.members || []).length,
+    role: ctx ? roleOf(ctx.user, p) : 'viewer',
+    owner: userRef(owner),
     created_at: p.created_at,
     experiment_count: exps.length,
+    running_count: exps.filter((e) => expJson(e).status === 'running').length,
     last_activity: last,
   };
 }
@@ -820,35 +850,65 @@ function origin(req) {
 // projects
 route('GET', '/api/v1/projects', (ctx) => {
   requireFull(ctx);
-  return db.projects.filter((p) => canRead(ctx, p)).map(projectJson);
+  return db.projects.filter((p) => roleOf(ctx.user, p)).map((p) => projectJson(p, ctx));
+});
+route('GET', '/api/v1/users', (ctx) => {
+  requireFull(ctx);
+  if (ctx.bearer) err(403, 'forbidden', 'not allowed with API token');
+  return db.users.filter((u) => !u.disabled).map(userRef);
+});
+route('GET', '/api/v1/projects/:id/sharing', (ctx, b, req, res, p) => {
+  requireFull(ctx);
+  return sharingJson(getProject(ctx, p.id));
+});
+route('PUT', '/api/v1/projects/:id/sharing', (ctx, b, req, res, p) => {
+  requireFull(ctx);
+  if (ctx.bearer) err(403, 'forbidden', 'not allowed with API token');
+  const pr = getProject(ctx, p.id, 'manage');
+  const ev = b.everyone ?? null;
+  if (ev !== null && ev !== 'viewer' && ev !== 'editor') err(400, 'invalid_role', 'everyone must be null, viewer or editor');
+  if (!Array.isArray(b.members)) err(400, 'invalid_members', 'members must be an array');
+  const seen = new Set();
+  const members = [];
+  for (const m of b.members) {
+    const uid = Number(m && m.user_id);
+    if (!db.users.some((u) => u.id === uid)) err(400, 'unknown_user', 'no such user: ' + m?.user_id);
+    if (uid === pr.owner_id) err(400, 'owner_member', "the owner can't be a member of their own project");
+    if (m.role !== 'viewer' && m.role !== 'editor') err(400, 'invalid_role', 'role must be viewer or editor');
+    if (seen.has(uid)) continue;
+    seen.add(uid);
+    members.push({ user_id: uid, role: m.role });
+  }
+  pr.everyone = ev;
+  pr.members = members;
+  return sharingJson(pr);
 });
 route('POST', '/api/v1/projects', (ctx, b) => {
   requireFull(ctx);
   if (typeof b.name !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(b.name)) err(400, 'invalid_name', 'name must match [A-Za-z0-9_.-]{1,64}');
   if (db.projects.some((p) => p.owner_id === ctx.user.id && p.name === b.name)) err(409, 'name_taken', 'project exists');
-  const p = { id: id(), owner_id: ctx.user.id, name: b.name, description: b.description || '', shared: false, created_at: nowIso() };
+  const p = { id: id(), owner_id: ctx.user.id, name: b.name, description: b.description || '', everyone: null, members: [], created_at: nowIso() };
   db.projects.push(p);
-  return projectJson(p);
+  return projectJson(p, ctx);
 });
 route('GET', '/api/v1/projects/:id', (ctx, b, req, res, p) => {
   requireFull(ctx);
-  return projectJson(getProject(ctx, p.id));
+  return projectJson(getProject(ctx, p.id), ctx);
 });
 route('PATCH', '/api/v1/projects/:id', (ctx, b, req, res, p) => {
   requireFull(ctx);
-  const pr = getProject(ctx, p.id, true);
+  const pr = getProject(ctx, p.id, 'manage');
   if (b.name != null) {
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(b.name)) err(400, 'invalid_name', 'name must match [A-Za-z0-9_.-]{1,64}');
     if (db.projects.some((x) => x !== pr && x.owner_id === pr.owner_id && x.name === b.name)) err(409, 'name_taken', 'project exists');
     pr.name = b.name;
   }
   if (b.description != null) pr.description = String(b.description);
-  if (b.shared != null) pr.shared = !!b.shared;
-  return projectJson(pr);
+  return projectJson(pr, ctx);
 });
 route('DELETE', '/api/v1/projects/:id', (ctx, b, req, res, p) => {
   requireFull(ctx);
-  const pr = getProject(ctx, p.id, true);
+  const pr = getProject(ctx, p.id, 'manage');
   db.projects = db.projects.filter((x) => x !== pr);
   db.experiments = db.experiments.filter((e) => e.project_id !== pr.id);
   return { ok: true };

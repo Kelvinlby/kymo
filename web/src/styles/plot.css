@@ -1,0 +1,624 @@
+/* ============================================================ chart toolbar */
+.plot-toolbar {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 10px var(--s-5);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.plot-toolbar .tb-search {
+  flex: 1 1 160px;
+  max-width: 340px;
+  min-width: 96px;
+}
+.plot-toolbar .tb-search .input {
+  height: 32px;
+}
+.plot-toolbar > * {
+  flex-shrink: 0;
+}
+.plot-toolbar > .tb-search {
+  flex-shrink: 1;
+}
+.tb-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  margin: 0 2px;
+}
+.tb-btn {
+  height: 32px;
+  font-weight: 530;
+}
+.tb-btn .tb-val {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent-text);
+  font-variant-numeric: tabular-nums;
+}
+.tb-btn .tb-val.off {
+  color: var(--text-3);
+}
+.tb-count {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px 0 10px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  transition:
+    background var(--t-fast),
+    color var(--t-fast),
+    border-color var(--t-fast);
+}
+.live-pill .live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.live-pill.on {
+  color: var(--running);
+  border-color: color-mix(in srgb, var(--running) 35%, transparent);
+  background: var(--running-soft);
+}
+.live-pill.on .live-dot {
+  background: var(--running);
+}
+.live-pill.on.active .live-dot {
+  animation: pulse 1.6s ease-out infinite;
+}
+.live-pill:hover {
+  border-color: var(--text-3);
+}
+
+/* ============================================================ groups */
+.groups {
+  padding: var(--s-4) var(--s-5) var(--s-12);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 6px 0 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 620;
+  width: calc(100% + 8px);
+  text-align: left;
+}
+.group-head:hover {
+  background: var(--surface-hover);
+}
+.group-head .chev {
+  color: var(--text-3);
+  transition: transform var(--t-fast) var(--ease);
+}
+.group-head.collapsed .chev {
+  transform: rotate(-90deg);
+}
+.group-head .g-count {
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--text-3);
+  background: var(--surface-3);
+  border-radius: var(--r-full);
+  padding: 2px 7px;
+  font-variant-numeric: tabular-nums;
+}
+.group-head .g-icon {
+  color: var(--text-3);
+}
+.group-head .g-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  margin-left: 6px;
+}
+.group-body {
+  padding: 4px 0 var(--s-4);
+}
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--s-3);
+}
+.panel-grid.cols-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+.panel-grid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.panel-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.panel-grid.cols-1 .panel-plot {
+  height: 320px;
+}
+
+/* ============================================================ chart card */
+.panel {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow:
+    var(--shadow-sm),
+    var(--card-ring);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition: box-shadow var(--t-fast) var(--ease);
+}
+.panel:hover {
+  box-shadow:
+    var(--shadow-md),
+    var(--card-ring);
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 8px 0 14px;
+  min-width: 0;
+}
+.panel-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--text);
+}
+.panel-group {
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+  font-weight: 550;
+  background: var(--surface-3);
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  flex-shrink: 0;
+}
+.panel-tags {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.panel-tags .badge {
+  height: 18px;
+  font-size: 10.5px;
+  padding: 0 6px;
+}
+.panel-head {
+  position: relative;
+}
+.panel-tools {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-left: 10px;
+  background: var(--surface);
+  box-shadow: -14px 0 12px -2px var(--surface);
+  border-radius: var(--r-md);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease);
+  z-index: 3;
+}
+.panel:hover .panel-tools,
+.panel:focus-within .panel-tools,
+.panel-tools.keep,
+.panel.full .panel-tools {
+  pointer-events: auto;
+}
+.fs-dialog .panel-tools {
+  background: var(--surface);
+}
+.panel:hover .panel-tools,
+.panel:focus-within .panel-tools,
+.panel-tools.keep,
+.panel.full .panel-tools {
+  opacity: 1;
+}
+@media (hover: none) {
+  .panel-tools {
+    opacity: 1;
+  }
+}
+.panel-tools .btn-icon {
+  --btn-h: 28px;
+  color: var(--text-3);
+}
+.panel-tools .btn-icon:hover {
+  color: var(--text);
+}
+.panel-tools .btn-icon.active {
+  color: var(--accent-text);
+}
+.panel-plot {
+  position: relative;
+  height: 236px;
+  padding: 0 10px 8px 4px;
+}
+.plot-host {
+  position: absolute;
+  inset: 0 10px 8px 4px;
+}
+.panel.shift .u-select {
+  background: var(--plot-stats) !important;
+  border-color: var(--plot-stats-border) !important;
+}
+.placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  pointer-events: none;
+  text-align: center;
+  padding: 16px;
+}
+.placeholder .error {
+  color: var(--danger);
+}
+.panel-loading {
+  position: absolute;
+  inset: 12px 18px 30px 46px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  pointer-events: none;
+}
+.panel-loading .skeleton {
+  width: 100%;
+  height: 100%;
+  opacity: 0.55;
+}
+.panel-settings {
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+}
+.panel-stats {
+  border-top: 1px solid var(--border);
+  padding: 8px 0 4px;
+  min-width: 0;
+}
+.stats-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 14px 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.stats-range .approx {
+  color: var(--warning);
+}
+.stats-table-wrap {
+  overflow-x: auto;
+}
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-xs);
+}
+.stats-table th,
+.stats-table td {
+  padding: 5px 8px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.stats-table td {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.stats-table th {
+  color: var(--text-3);
+  font-weight: 550;
+  font-size: var(--fs-2xs);
+}
+.stats-table th:first-child,
+.stats-table td:first-child {
+  text-align: left;
+  padding-left: 14px;
+  font-family: var(--font);
+  font-size: var(--fs-xs);
+}
+.stats-table tr:last-child td {
+  border-bottom: 0;
+}
+.run-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* fullscreen chart */
+.fs-dialog .dialog-body {
+  padding: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 0;
+  overflow: hidden;
+}
+.fs-dialog .panel {
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent;
+  height: 100%;
+}
+.fs-dialog .panel-plot {
+  flex: 1;
+  height: auto;
+  min-height: 300px;
+}
+.fs-dialog .panel-head {
+  padding-left: var(--s-5);
+}
+.fs-side {
+  border-left: 1px solid var(--border);
+  overflow: auto;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+}
+:root[data-theme='dark'] .fs-side {
+  background: rgba(255, 255, 255, 0.015);
+}
+.fs-side-head {
+  padding: 14px 16px 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fs-side-head b {
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+.fs-stat {
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+}
+.fs-stat-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.fs-stat-name span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fs-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+.fs-stat-grid div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.fs-stat-grid .k {
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.fs-stat-grid .v {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 1000px) {
+  .fs-dialog .dialog-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) 220px;
+  }
+  .fs-side {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+}
+
+/* ============================================================ uPlot theming */
+.uplot {
+  font-family: var(--font);
+}
+.u-over {
+  cursor: crosshair;
+}
+.u-cursor-x,
+.u-cursor-y {
+  border-color: var(--plot-cursor) !important;
+}
+.u-cursor-x {
+  border-right-style: dashed !important;
+}
+.u-cursor-y {
+  display: none;
+}
+.u-select {
+  background: var(--plot-select) !important;
+  border-left: 1px solid var(--plot-select-border);
+  border-right: 1px solid var(--plot-select-border);
+}
+.u-cursor-pt {
+  border-radius: 50%;
+}
+.stats-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--plot-stats);
+  border-left: 1px solid var(--plot-stats-border);
+  border-right: 1px solid var(--plot-stats-border);
+  pointer-events: none;
+}
+
+/* chart tooltip (one shared element, positioned by the controller) */
+.plot-tip {
+  display: none;
+  top: 0;
+  left: 0;
+  z-index: 110;
+  pointer-events: none;
+  min-width: 200px;
+  max-width: 360px;
+  padding: 8px 10px 7px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow:
+    var(--shadow-lg),
+    var(--card-ring);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  color: var(--text);
+}
+:root[data-theme='dark'] .plot-tip {
+  background: color-mix(in srgb, var(--surface-3) 94%, transparent);
+}
+.tip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.tip-x {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tip-k {
+  color: var(--text-3);
+  font-weight: 500;
+}
+.tip-key {
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.tip-sw {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.tip-row .n {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.tip-row .v {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tip-row .raw,
+.tip-foot .raw {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+.tip-row .st {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  min-width: 40px;
+  text-align: right;
+}
+.tip-more,
+.tip-foot {
+  color: var(--text-3);
+  font-size: var(--fs-2xs);
+  padding-top: 4px;
+}
+.tip-foot {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  text-align: right;
+}
+
+.panel-plot.no-points .plot-host {
+  visibility: hidden;
+}
+@container (max-width: 760px) {
+  .plot-toolbar .tb-display .btn-label {
+    display: none;
+  }
+  .plot-toolbar .tb-display {
+    padding: 0 8px;
+  }
+}
+
+@container (max-width: 560px) {
+  .plot-toolbar {
+    flex-wrap: wrap;
+  }
+}

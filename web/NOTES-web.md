@@ -1,13 +1,17 @@
 # Kymo web UI — notes
 
-Vite + Preact + TypeScript + uPlot. Runtime deps: `preact`, `uplot` only. Hand-rolled router (`src/router.tsx`).
+Vite + Preact + TypeScript + uPlot. Runtime deps: `preact`, `uplot`, `lucide-preact` (icons, tree-shaken),
+`@fontsource-variable/inter` and `@fontsource-variable/jetbrains-mono` (self-hosted fonts). No UI kit. Hand-rolled router
+(`src/router.tsx`). Chart pages, Settings and Admin are lazy-loaded chunks (`app.tsx`).
 
 ## Run
 
 ```sh
 cd web
 npm install
-npm run mock          # mock API on :8080 (no deps). Flags: --strict (admin passkey enforced), --fresh (setup token flow), --latency=MS
+npm run mock          # mock API on :8080 (no deps). Flags: --port=N, --dist=DIR, --strict (admin passkey enforced), --fresh (setup token flow), --latency=MS
+                      # e.g. node mock/server.mjs --port=8090 ; open http://127.0.0.1:8090 (127.0.0.1 keeps its cookie apart from localhost:8080)
+KYMO_API=http://localhost:8090 npm run dev   # point the Vite proxy at another API
 npm run dev           # Vite on :5173, proxies /api -> http://localhost:8080 (mock or the real kymo-server)
 npm run build         # tsc --noEmit + vite build -> web/dist (served by kymo-server with SPA fallback)
 npx vitest run        # unit tests (stats/smoothing, base64url/WebAuthn conversion, store batching, formatting)
@@ -22,6 +26,20 @@ issued challenge and the right `type`, which validates the browser-side conversi
 For the real server in dev, start it with `KYMO_ORIGIN=http://localhost:8080,http://localhost:5173` so WebAuthn accepts
 the Vite origin.
 
+## UI structure (redesign)
+
+- `src/styles/` — `tokens.css` (type scale, 4px spacing, radii, surfaces, semantic + plot colours for light and dark),
+  `base.css`, `components.css`, `layout.css` (shell, palette), `plot.css`, `pages.css`. Theme = `<html data-theme>`, set
+  before first paint in `index.html`, managed by `lib/theme.ts` (light / dark / system).
+- `components/ui.tsx` (buttons, fields, switch, segmented, popover/menu, dialog, tabs, badges, skeletons, empty states),
+  `overlay.tsx` (Escape layer stack, focus trap, toasts, confirm dialog, `[data-tip]` tooltips), `Shell.tsx` (sidebar,
+  page header), `CommandPalette.tsx` (Ctrl/⌘K; pages add items via `lib/palette.ts`), `project.tsx` (cards, share dialog,
+  sharing summary, role-gated actions), `ConfigView.tsx` (formatted config), `Snippets.tsx` (Python dict + curl).
+- Card titles drop the first-level group prefix (`Grid.tsx: shortKey`). Roles come from `project.role` with a fallback
+  (`api.ts: projectRole`) for servers that still send `shared`.
+- uPlot axis/grid/cursor colours are functions reading cached CSS tokens; a theme change re-reads them and calls
+  `redraw(false)` on live charts — no re-creation and no refetch.
+
 ## Layout
 
 - `src/api.ts` — typed client. Every request: `credentials: "same-origin"`; non-GET requests send `X-Kymo-CSRF: 1`.
@@ -30,7 +48,7 @@ the Vite origin.
   `session_*` code re-fetches the auth state.
 - `src/lib/webauthn.ts` — own base64url ⇄ ArrayBuffer conversion of webauthn-rs JSON (`{publicKey: …}`), null members are
   stripped before calling `navigator.credentials.create/get`.
-- `src/lib/stats.ts` — pure numeric code over Float64Array: debiased EMA (TensorBoard formula), quickselect, quantiles,
+- `src/lib/stats.ts` — pure numeric code over Float64Array: debiased EMA (zero-bias corrected), quickselect, quantiles,
   descriptive stats + least-squares slope, outlier-clipped range, k-way outer join of runs (`alignRuns`).
 - `src/plot/store.ts` — series cache + batcher: all `get()` calls in one frame become one `POST /series/query` per
   distinct `(step window, max_points)` (≤256 series per request); in-flight dedup; LRU by point count; per-series
@@ -49,6 +67,9 @@ run's value (nearest point per run, sorted by value; raw value next to the smoot
 min/max envelope as a faint band. Global toolbar: regex key filter, EMA smoothing, x = step / wall time / relative
 time, log-y, outlier clipping (top/bottom p%), resolution (max_points), live. Per panel: log-y, smoothing override,
 stats table, expand, CSV (as plotted) / PNG export, links to full-resolution `/series/raw` CSV per run.
+
+Shortcuts: `/` metric filter, `s` smoothing on/off, `l` log-y, `x` cycle x axis, `f` fullscreen the hovered chart,
+`r` runs pane, `?` help, `[` sidebar, `g o / g p / g s` navigation, Esc closes the top-most layer.
 
 Live mode (default on, persisted): every 5 s, for the selected *running* experiments (plus one extra poll after a run
 stops) the UI calls `GET /experiments/{id}/metrics` and invalidates only series whose `last_step` changed; visible
@@ -79,7 +100,7 @@ sidebar width.
 
 - Real WebAuthn ceremonies were only exercised with a stubbed `navigator.credentials` (the test browser has no
   authenticator); the conversion helpers are unit-tested and the mock verifies challenge/type round-trips.
-- Smoothing runs over the plotted (possibly downsampled) points, like TensorBoard does over its sampled points; zooming
+- Smoothing runs over the plotted (possibly downsampled) points; zooming
   changes the effective smoothing window.
 - Stats on downsampled data are approximate (bucket means) and flagged "≈"; zoom in for exact values.
 - No run hover-highlighting across panels, no custom panel layouts/saved views.

@@ -123,22 +123,76 @@ export function compileFilter(q: string): { test: (s: string) => boolean; error?
   }
 }
 
-/** Flatten nested config into dotted paths: {model:{d:1}} -> {"model.d": 1}. */
+const isPlainObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Flatten nested config into dotted paths: {model:{d:1}} -> {"model.d": 1}. Arrays of primitives stay
+ * values (shown as chips); arrays containing objects are flattened by index (`layers.0.dim`).
+ */
 export function flattenConfig(obj: unknown, prefix = '', out: Record<string, unknown> = {}): Record<string, unknown> {
-  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+  if (isPlainObj(obj)) {
+    const entries = Object.entries(obj);
+    if (!entries.length && prefix) out[prefix] = {};
+    for (const [k, v] of entries) {
       const p = prefix ? prefix + '.' + k : k;
-      if (v && typeof v === 'object' && !Array.isArray(v)) flattenConfig(v, p, out);
+      if (isPlainObj(v) || (Array.isArray(v) && v.some((x) => isPlainObj(x) || Array.isArray(x)))) flattenConfig(v, p, out);
       else out[p] = v;
     }
+  } else if (Array.isArray(obj)) {
+    obj.forEach((v, i) => {
+      const p = prefix + '.' + i;
+      if (isPlainObj(v) || Array.isArray(v)) flattenConfig(v, p, out);
+      else out[p] = v;
+    });
   }
   return out;
 }
 
+/** Config number: 3e-4, 4,194,304, 0.95, 1.5e+9 — compact but exact enough to recognise a value. */
+export function fmtConfigNumber(v: number): string {
+  if (!Number.isFinite(v)) return Number.isNaN(v) ? 'NaN' : v > 0 ? '∞' : '-∞';
+  if (v === 0) return '0';
+  const a = Math.abs(v);
+  if (Number.isInteger(v) && a < 1e15) return v.toLocaleString('en-US');
+  if (a < 1e-3 || a >= 1e9) {
+    const [m, e] = v.toExponential().split('e');
+    const mant = String(Number(Number(m).toPrecision(6)));
+    return mant + 'e' + (e.startsWith('+') ? e.slice(1) : e);
+  }
+  return String(Number(v.toPrecision(8)));
+}
+
+export type ConfigKind = 'number' | 'boolean' | 'string' | 'null' | 'array' | 'object';
+export function configKind(v: unknown): ConfigKind {
+  if (v === null || v === undefined) return 'null';
+  if (Array.isArray(v)) return 'array';
+  const t = typeof v;
+  if (t === 'number' || t === 'boolean' || t === 'string') return t;
+  return 'object';
+}
+
+/** One-line text form of a config value (tables, copy-to-clipboard, search). */
 export function fmtConfigValue(v: unknown): string {
-  if (v == null) return '';
-  if (typeof v === 'number') return fmtNum(v, 6);
+  switch (configKind(v)) {
+    case 'null':
+      return v === null ? 'null' : '';
+    case 'number':
+      return fmtConfigNumber(v as number);
+    case 'string':
+      return v as string;
+    case 'boolean':
+      return String(v);
+    case 'array':
+      return (v as unknown[]).map((x) => (typeof x === 'object' && x !== null ? JSON.stringify(x) : fmtConfigValue(x))).join(', ');
+    default:
+      return Object.keys(v as object).length ? JSON.stringify(v) : '{}';
+  }
+}
+
+/** Raw value for copying: numbers in full precision, strings as-is. */
+export function rawConfigValue(v: unknown): string {
   if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   return JSON.stringify(v);
 }
 

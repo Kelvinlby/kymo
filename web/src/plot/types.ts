@@ -9,8 +9,6 @@ export interface PlotSettings {
   clipPct: number;
   /** points per series requested for an unzoomed panel */
   maxPoints: number;
-  /** bumps when the color theme changes (forces re-creating charts) */
-  theme: number;
 }
 
 export interface RunInfo {

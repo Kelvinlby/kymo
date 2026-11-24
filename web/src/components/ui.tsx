@@ -1,6 +1,6 @@
 // Small component kit: buttons, inputs, switches, segmented controls, popovers/menus, dialogs,
 // tabs, badges, skeletons, empty states. Styling lives in styles/components.css.
-import type { ComponentChildren, JSX, Ref, VNode } from 'preact';
+import type { ButtonHTMLAttributes, ComponentChildren, Ref, VNode } from 'preact';
 import { createPortal } from 'preact/compat';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { copyText } from '../lib/format';
@@ -13,7 +13,7 @@ export const cx = (...a: (string | false | null | undefined | 0)[]) => a.filter(
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-ghost';
 type Size = 'xs' | 'sm' | 'md' | 'lg';
 
-type BtnProps = Omit<JSX.HTMLAttributes<HTMLButtonElement>, 'icon' | 'size'> & {
+type BtnProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'icon' | 'size'> & {
   variant?: Variant;
   size?: Size;
   icon?: LucideIcon;
@@ -36,7 +36,7 @@ export function Button({ variant = 'secondary', size = 'md', icon: Icon, iconRig
   );
 }
 
-type IconBtnProps = Omit<JSX.HTMLAttributes<HTMLButtonElement>, 'icon' | 'size' | 'label'> & {
+type IconBtnProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'icon' | 'size' | 'label'> & {
   icon: LucideIcon;
   label: string;
   kbd?: string;
@@ -380,6 +380,8 @@ export function Dialog(props: {
   icon?: LucideIcon;
   bodyClass?: string;
   headerExtra?: ComponentChildren;
+  ariaLabel?: string;
+  backdropClass?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [closing, setClosing] = useState(false);
@@ -400,8 +402,8 @@ export function Dialog(props: {
   const titleId = useRef('dlg' + Math.random().toString(36).slice(2, 8)).current;
   const Icon = props.icon;
   return createPortal(
-    <div class={cx('dialog-backdrop', closing && 'closing')} onPointerDown={(e) => e.target === e.currentTarget && close()}>
-      <div ref={ref} class={cx('dialog', 'dialog-' + (props.size || 'md'), props.class)} role={props.role || 'dialog'} aria-modal="true" aria-labelledby={props.title ? titleId : undefined} tabIndex={-1}>
+    <div class={cx('dialog-backdrop', props.backdropClass, closing && 'closing')} onPointerDown={(e) => e.target === e.currentTarget && close()}>
+      <div ref={ref} class={cx('dialog', 'dialog-' + (props.size || 'md'), props.class)} role={props.role || 'dialog'} aria-modal="true" aria-labelledby={props.title ? titleId : undefined} aria-label={props.title ? undefined : props.ariaLabel} tabIndex={-1}>
         {props.title && (
           <div class="dialog-head">
             {Icon && (
@@ -541,7 +543,7 @@ export function ErrorBox({ error, title }: { error: unknown; title?: string }) {
 }
 
 export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
-  const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
+  const parts = name.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   const ini = ((parts[0]?.[0] || '?') + (parts[1]?.[0] || '')).toUpperCase();
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -553,7 +555,7 @@ export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
 }
 
 // ------------------------------------------------------------------------------------- copy
-export function CopyButton({ text, label = 'Copy', size = 'sm', variant = 'secondary', iconOnly }: { text: string; label?: string; size?: Size; variant?: Variant; iconOnly?: boolean }) {
+export function CopyButton({ text, label = 'Copy', size = 'sm', variant = 'secondary', iconOnly, class: cls, tipPos }: { text: string; label?: string; size?: Size; variant?: Variant; iconOnly?: boolean; class?: string; tipPos?: 'top' | 'bottom' | 'right' }) {
   const [done, setDone] = useState(false);
   const onClick = async () => {
     if (await copyText(text)) {
@@ -561,9 +563,9 @@ export function CopyButton({ text, label = 'Copy', size = 'sm', variant = 'secon
       setTimeout(() => setDone(false), 1400);
     } else toast('Copy failed', { kind: 'error', description: 'Your browser blocked clipboard access.' });
   };
-  if (iconOnly) return <IconButton icon={done ? Check : Copy} label={done ? 'Copied' : label} size={size} variant={variant === 'secondary' ? 'ghost' : variant} onClick={onClick} class={done ? 'copied' : ''} />;
+  if (iconOnly) return <IconButton icon={done ? Check : Copy} label={done ? 'Copied' : label} size={size} variant={variant === 'secondary' ? 'ghost' : variant} onClick={onClick} class={cx(done && 'copied', cls)} tipPos={tipPos} />;
   return (
-    <Button size={size} variant={variant} icon={done ? Check : Copy} onClick={onClick} class={done ? 'copied' : ''}>
+    <Button size={size} variant={variant} icon={done ? Check : Copy} onClick={onClick} class={cx(done && 'copied', cls)}>
       {done ? 'Copied' : label}
     </Button>
   );

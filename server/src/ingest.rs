@@ -464,6 +464,37 @@ pub fn parse(body: &[u8], max_values: usize) -> Result<Parsed<'_>, ParseError> {
 }
 
 #[cfg(test)]
+mod perf {
+    #[test]
+    #[ignore]
+    fn perf_parse() {
+        let mut s = String::from(r#"{"project":"p","experiment":"e","points":["#);
+        for step in 0..500 {
+            if step > 0 {
+                s.push(',');
+            }
+            s.push_str(&format!(r#"{{"step":{step},"ts":1700000000.5,"metrics":{{"#));
+            for k in 0..200 {
+                if k > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!(r#""train/metric_{k}":{}"#, 0.123456789 * (k + step) as f64));
+            }
+            s.push_str("}}");
+        }
+        s.push_str("]}");
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..20 {
+            let t = std::time::Instant::now();
+            let p = super::parse(s.as_bytes(), 1_000_000).ok().unwrap();
+            assert_eq!(p.values.len(), 100_000);
+            best = best.min(t.elapsed());
+        }
+        println!("parse 100k values ({} KiB): {:?} = {:.1} ns/value", s.len() / 1024, best, best.as_nanos() as f64 / 1e5);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

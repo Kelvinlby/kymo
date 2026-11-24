@@ -1,43 +1,60 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
-import { api, type Experiment, type MetricSummary, type Status } from '../api';
-import { Shell } from '../components/Shell';
-import { ErrorBox, StatusBadge } from '../components/ui';
-import { JsonView } from '../components/JsonView';
-import { absTime, fmtInt, fmtNum, lsGet, lsSet, relTime, toUnixSeconds } from '../lib/format';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { api, canEdit, projectRole, type Experiment, type MetricSummary, type Project, type Status } from '../api';
+import { useAuth } from '../auth';
+import { NotFound, Page } from '../components/Shell';
+import { ConfigView } from '../components/ConfigView';
+import { Braces, ChartLine, ChevronDown, Clock, Download, FlaskConical, Hash, Layers, Pencil, Plus, Search, Server, StickyNote, Table2, Trash, X, Activity } from '../components/icons';
+import { confirmDialog, toast } from '../components/overlay';
+import { Alert, Badge, Button, Dialog, EmptyState, Field, MenuItem, MenuSep, Popover, SearchInput, Skeleton, StatusPill, Tabs, cx, useTick } from '../components/ui';
+import { refreshProjects } from '../lib/data';
+import { absTime, compileFilter, fmtInt, fmtNum, lsGet, lsSet, relTime, toUnixSeconds } from '../lib/format';
 import { paletteColor } from '../plot/colors';
-import { PanelGrid, PlotToolbar, useGridState, useLiveMetrics, usePlotSettings } from '../plot/Grid';
+import { PanelGrid, PlotToolbar, useGridState, useLayout, useLiveMetrics, usePlotHotkeys, usePlotSettings } from '../plot/Grid';
 import { SeriesStore } from '../plot/store';
 import type { RunInfo } from '../plot/types';
-import { Link, navigate } from '../router';
+import { Link, navigate, useLocation } from '../router';
+
+type Tab = 'charts' | 'config' | 'notes' | 'summary';
+const STATUSES: Status[] = ['running', 'finished', 'failed', 'crashed'];
 
 export function ExperimentPage({ experimentId }: { experimentId: number }) {
+  const { auth } = useAuth();
+  const loc = useLocation();
   const store = useMemo(() => new SeriesStore(), [experimentId]);
   const [exp, setExp] = useState<Experiment | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [metrics, setMetrics] = useState<MetricSummary[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [settings, updateSettings] = usePlotSettings();
+  const [layout, setLayout] = useLayout();
   const [live, setLiveRaw] = useState(() => lsGet('kymo:live', true));
   const setLive = (b: boolean) => {
     setLiveRaw(b);
     lsSet('kymo:live', b);
   };
-  const [tab, setTab] = useState<'charts' | 'table'>('charts');
+  const initialTab = (loc.query.get('tab') as Tab) || 'charts';
+  const [tab, setTabRaw] = useState<Tab>(['charts', 'config', 'notes', 'summary'].includes(initialTab) ? initialTab : 'charts');
+  const setTab = (t: Tab) => {
+    setTabRaw(t);
+    navigate('/e/' + experimentId + (t === 'charts' ? '' : '?tab=' + t), { replace: true });
+  };
+  const [renaming, setRenaming] = useState(false);
+  const filterRef = useRef<HTMLInputElement>(null);
+  useTick(30000);
 
   useEffect(() => {
-    Promise.all([api.experiment(experimentId), api.metrics(experimentId)]).then(
-      ([e, m]) => {
-        setExp(e);
-        setMetrics(m);
-      },
-      setError,
-    );
+    Promise.all([api.experiment(experimentId), api.metrics(experimentId)]).then(([e, m]) => {
+      setExp(e);
+      setMetrics(m);
+      if (e.project) api.project(e.project.id).then(setProject, () => {});
+    }, setError);
   }, [experimentId]);
 
   const running = exp?.status === 'running';
   useEffect(() => {
     if (!live || !running) return;
     const t = setInterval(() => {
-      if (document.visibilityState === 'visible') api.experiment(experimentId).then(setExp, () => {});
+      if (document.visibilityState === 'visible') api.experiment(experimentId).then((e) => setExp((o) => ({ ...o, ...e })), () => {});
     }, 5000);
     return () => clearInterval(t);
   }, [live, running, experimentId]);
@@ -46,243 +63,432 @@ export function ExperimentPage({ experimentId }: { experimentId: number }) {
   const keys = useMemo(() => (metrics || []).map((m) => m.key), [metrics]);
   const grid = useGridState('e' + experimentId, keys);
   const runs = useMemo<RunInfo[]>(() => (exp ? [{ id: exp.id, name: exp.name, color: paletteColor(0), startTs: toUnixSeconds(exp.created_at) }] : []), [exp?.id, exp?.name]);
+  usePlotHotkeys(settings, updateSettings, filterRef);
 
-  const patch = async (b: Parameters<typeof api.patchExperiment>[1]) => {
-    setError(null);
+  const role = projectRole(project, auth.user);
+  const editable = !!project && canEdit(role);
+
+  const patch = async (b: Parameters<typeof api.patchExperiment>[1], okMsg?: string) => {
     try {
       const e = await api.patchExperiment(experimentId, b);
       setExp((old) => ({ ...old!, ...e }));
+      if (okMsg) toast(okMsg);
+      return true;
     } catch (e) {
-      setError(e);
+      toast.error(e, 'Could not save');
+      return false;
+    }
+  };
+  const remove = async () => {
+    if (!exp) return;
+    const ok = await confirmDialog({
+      title: `Delete “${exp.name}”?`,
+      message: `This permanently deletes the experiment and all ${exp.metric_count} of its metrics. This cannot be undone.`,
+      confirmLabel: 'Delete experiment',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteExperiment(exp.id);
+      toast('Experiment deleted', { description: exp.name });
+      refreshProjects();
+      navigate(exp.project ? '/p/' + exp.project.id : '/');
+    } catch (e) {
+      toast.error(e, 'Could not delete the experiment');
     }
   };
 
+  if (error && !exp) {
+    const st = (error as { status?: number }).status;
+    if (st === 404 || st === 403) return <NotFound msg="Experiment not found" body="It may have been deleted, or its project isn't shared with you." />;
+  }
+
+  const facts: { icon: typeof Server; label: string; value: string; title?: string; mono?: boolean }[] = exp
+    ? [
+        { icon: Server, label: 'Host', value: exp.host || '—', mono: true },
+        { icon: Clock, label: 'Created', value: relTime(exp.created_at), title: absTime(exp.created_at) },
+        { icon: Activity, label: 'Updated', value: relTime(exp.updated_at), title: absTime(exp.updated_at) },
+        { icon: Hash, label: 'Last step', value: fmtInt(exp.last_step), mono: true },
+        { icon: Layers, label: 'Metrics', value: fmtInt(exp.metric_count), mono: true },
+      ]
+    : [];
+
   return (
-    <Shell
-      crumbs={
-        <>
-          <Link href="/">Projects</Link>
-          <span class="sep">/</span>
-          {exp?.project ? <Link href={'/p/' + exp.project.id}>{exp.project.name}</Link> : <span>…</span>}
-          <span class="sep">/</span>
-          <span class="cur">{exp?.name ?? '…'}</span>
-        </>
+    <Page
+      title={exp?.name}
+      crumbs={[
+        { label: 'Projects', href: '/projects' },
+        exp?.project ? { label: exp.project.name, href: '/p/' + exp.project.id } : { label: <Skeleton w={80} /> },
+        { label: exp?.name ?? <Skeleton w={120} /> },
+      ]}
+      actions={
+        exp?.project && (
+          <Link href={'/p/' + exp.project.id} class="btn btn-secondary btn-sm">
+            <ChartLine size={14} /> Compare in project
+          </Link>
+        )
       }
     >
-      <div class="page wide">
-        <ErrorBox error={error} />
-        {exp && (
-          <>
-            <div class="page-head">
-              <h1 class="mono">{exp.name}</h1>
-              <StatusBadge status={exp.status} />
-              <span class="spacer" />
-              <select value={exp.status} title="Set status" onChange={(e) => patch({ status: (e.target as HTMLSelectElement).value as Status })}>
-                {['running', 'finished', 'failed', 'crashed'].map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
+      <div class="exp-hero">
+        <div class="exp-hero-inner">
+          {!exp ? (
+            <div class="col">
+              <Skeleton w={280} h={28} />
+              <Skeleton w={420} />
+            </div>
+          ) : (
+            <>
+              <div class="exp-title-row">
+                <span class="exp-icon">
+                  <FlaskConical size={18} />
+                </span>
+                <h1 class="exp-name">{exp.name}</h1>
+                <StatusPill status={exp.status} />
+                {project && !editable && <Badge>Read-only</Badge>}
+                <span class="spacer" />
+                {editable && (
+                  <div class="exp-actions">
+                    <Popover
+                      menu
+                      placement="bottom-end"
+                      width={200}
+                      trigger={(p) => (
+                        <Button btnRef={p.ref as any} size="sm" iconRight={ChevronDown} onClick={p.toggle} aria-expanded={p.open} aria-haspopup="menu">
+                          Set status
+                        </Button>
+                      )}
+                    >
+                      {(close) =>
+                        STATUSES.map((s) => (
+                          <MenuItem key={s} checked={exp.status === s} onSelect={() => (close(), s !== exp.status && patch({ status: s }, 'Status set to ' + s))}>
+                            <span class="row" style={{ gap: 8 }}>
+                              <span class={'status-dot solo status-' + s} />
+                              {s[0].toUpperCase() + s.slice(1)}
+                            </span>
+                          </MenuItem>
+                        ))
+                      }
+                    </Popover>
+                    <Popover
+                      menu
+                      placement="bottom-end"
+                      width={200}
+                      trigger={(p) => (
+                        <Button btnRef={p.ref as any} size="sm" variant="ghost" icon={Pencil} onClick={p.toggle} aria-expanded={p.open} aria-haspopup="menu">
+                          Edit
+                        </Button>
+                      )}
+                    >
+                      {(close) => (
+                        <>
+                          <MenuItem icon={Pencil} onSelect={() => (close(), setRenaming(true))}>
+                            Rename…
+                          </MenuItem>
+                          <MenuItem icon={StickyNote} onSelect={() => (close(), setTab('notes'))}>
+                            Edit notes
+                          </MenuItem>
+                          <MenuSep />
+                          <MenuItem icon={Trash} danger onSelect={() => (close(), remove())}>
+                            Delete experiment
+                          </MenuItem>
+                        </>
+                      )}
+                    </Popover>
+                  </div>
+                )}
+              </div>
+              <TagsEditor tags={exp.tags} editable={editable} onChange={(tags) => patch({ tags })} />
+              <dl class="facts">
+                {facts.map((f) => (
+                  <div class="fact" key={f.label}>
+                    <dt>
+                      <f.icon size={13} aria-hidden="true" />
+                      {f.label}
+                    </dt>
+                    <dd class={cx(f.mono && 'mono')} title={f.title || f.value}>
+                      {f.value}
+                    </dd>
+                  </div>
                 ))}
-              </select>
-              <button
-                onClick={() => {
-                  const n = prompt('Rename experiment', exp.name);
-                  if (n && n !== exp.name) patch({ name: n });
-                }}
-              >
-                Rename
-              </button>
-              <button
-                class="danger"
-                onClick={async () => {
-                  if (!confirm(`Delete experiment "${exp.name}" and all its metrics? This cannot be undone.`)) return;
-                  try {
-                    await api.deleteExperiment(exp.id);
-                    navigate(exp.project ? '/p/' + exp.project.id : '/');
-                  } catch (e) {
-                    setError(e);
-                  }
-                }}
-              >
-                Delete
-              </button>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(300px, 1.3fr) minmax(300px, 1.5fr)', gap: 12, marginBottom: 14 }} class="exp-top">
-              <div class="card">
-                <div class="card-head">
-                  <h2>Overview</h2>
-                </div>
-                <div class="card-body kv">
-                  <span>ID</span>
-                  <span class="mono">{exp.id}</span>
-                  <span>Host</span>
-                  <span class="mono">{exp.host || '—'}</span>
-                  <span>Created</span>
-                  <span title={absTime(exp.created_at)}>{absTime(exp.created_at)}</span>
-                  <span>Updated</span>
-                  <span title={absTime(exp.updated_at)}>{relTime(exp.updated_at)}</span>
-                  <span>Last step</span>
-                  <span class="mono">{fmtInt(exp.last_step)}</span>
-                  <span>Metrics</span>
-                  <span>{exp.metric_count}</span>
-                  <span>Tags</span>
-                  <TagsEditor tags={exp.tags} onChange={(tags) => patch({ tags })} />
-                </div>
-              </div>
-              <div class="card">
-                <div class="card-head">
-                  <h2>Notes</h2>
-                </div>
-                <div class="card-body">
-                  <NotesEditor notes={exp.notes || ''} onSave={(notes) => patch({ notes })} />
-                </div>
-              </div>
-              <div class="card">
-                <div class="card-head">
-                  <h2 class="grow">Config</h2>
-                  <button class="small" onClick={() => navigator.clipboard?.writeText(JSON.stringify(exp.config, null, 2))}>
-                    Copy JSON
-                  </button>
-                </div>
-                <div class="card-body" style={{ maxHeight: 300, overflow: 'auto' }}>
-                  <JsonView value={exp.config} />
-                </div>
-              </div>
-            </div>
-            <div class="row" style={{ marginBottom: 6 }}>
-              <h2>Metrics</h2>
-              <button class={'small' + (tab === 'charts' ? ' primary' : '')} onClick={() => setTab('charts')}>
-                Charts
-              </button>
-              <button class={'small' + (tab === 'table' ? ' primary' : '')} onClick={() => setTab('table')}>
-                Summary table
-              </button>
-            </div>
-            {tab === 'charts' ? (
-              <>
-                <PlotToolbar
-                  settings={settings}
-                  update={updateSettings}
-                  filter={grid.filter}
-                  setFilter={grid.setFilter}
-                  filterError={grid.filterError}
-                  live={live}
-                  setLive={setLive}
-                  hasRunning={running}
-                  shown={grid.keys.length}
-                  total={keys.length}
-                  onCollapseAll={grid.collapseAll}
-                />
-                <PanelGrid keys={grid.keys} runs={runs} settings={settings} store={store} syncKey={'exp' + experimentId} collapsed={grid.collapsed} toggle={grid.toggle} />
-              </>
-            ) : (
-              <MetricsTable metrics={(metrics || []).filter((m) => grid.keys.includes(m.key))} filter={grid.filter} setFilter={grid.setFilter} experimentId={exp.id} />
-            )}
-          </>
-        )}
-        {!exp && !error && <div class="empty">Loading…</div>}
+              </dl>
+            </>
+          )}
+        </div>
+        <div class="exp-tabs">
+          <Tabs
+            ariaLabel="Experiment sections"
+            value={tab}
+            onChange={setTab}
+            tabs={[
+              { value: 'charts', label: 'Charts', icon: ChartLine, count: metrics?.length },
+              { value: 'config', label: 'Config', icon: Braces },
+              { value: 'notes', label: 'Notes', icon: StickyNote },
+              { value: 'summary', label: 'Summary', icon: Table2 },
+            ]}
+          />
+        </div>
       </div>
-    </Shell>
+      {!!error && exp && (
+        <div class="page-wrap" style={{ paddingBottom: 0 }}>
+          <Alert tone="danger">{(error as Error).message}</Alert>
+        </div>
+      )}
+      {exp && tab === 'charts' && (
+        <div class="exp-charts">
+          <PlotToolbar
+            settings={settings}
+            update={updateSettings}
+            filter={grid.filter}
+            setFilter={grid.setFilter}
+            filterError={grid.filterError}
+            filterRef={filterRef}
+            live={live}
+            setLive={setLive}
+            hasRunning={running}
+            shown={grid.keys.length}
+            total={keys.length}
+            onCollapseAll={grid.collapseAll}
+            allCollapsed={grid.allCollapsed}
+            layout={layout}
+            setLayout={setLayout}
+          />
+          <PanelGrid
+            keys={grid.keys}
+            allKeys={keys}
+            runs={runs}
+            settings={settings}
+            store={store}
+            syncKey={'exp' + experimentId}
+            collapsed={grid.collapsed}
+            toggle={grid.toggle}
+            pins={grid.pins}
+            togglePin={grid.togglePin}
+            layout={layout}
+            onClearFilter={() => grid.setFilter('')}
+          />
+        </div>
+      )}
+      {exp && tab === 'config' && (
+        <div class="page-wrap narrow">
+          <ConfigView config={exp.config} />
+        </div>
+      )}
+      {exp && tab === 'notes' && (
+        <div class="page-wrap narrow">
+          <NotesEditor notes={exp.notes || ''} editable={editable} onSave={(notes) => patch({ notes }, 'Notes saved')} />
+        </div>
+      )}
+      {exp && tab === 'summary' && (
+        <div class="page-wrap">
+          <MetricsTable metrics={metrics || []} experimentId={exp.id} />
+        </div>
+      )}
+      {renaming && exp && (
+        <RenameDialog
+          name={exp.name}
+          onClose={() => setRenaming(false)}
+          onSave={async (n) => {
+            if (await patch({ name: n }, 'Experiment renamed')) setRenaming(false);
+          }}
+        />
+      )}
+    </Page>
   );
 }
 
-function MetricsTable({ metrics, filter, setFilter, experimentId }: { metrics: MetricSummary[]; filter: string; setFilter: (s: string) => void; experimentId: number }) {
+function RenameDialog({ name, onClose, onSave }: { name: string; onClose: () => void; onSave: (n: string) => Promise<void> }) {
+  const [v, setV] = useState(name);
+  const [busy, setBusy] = useState(false);
+  const err = !v.trim() ? 'A name is required' : v.length > 128 ? 'At most 128 characters' : null;
+  const submit = async (e?: Event) => {
+    e?.preventDefault();
+    if (err || v === name) return v === name ? onClose() : undefined;
+    setBusy(true);
+    await onSave(v.trim());
+    setBusy(false);
+  };
+  return (
+    <Dialog
+      title="Rename experiment"
+      icon={Pencil}
+      size="sm"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" loading={busy} disabled={!!err} onClick={() => submit()}>
+            Rename
+          </Button>
+        </>
+      }
+    >
+      <form onSubmit={submit}>
+        <Field label="Name" error={err} hint="SDK clients that log by name will create a new experiment under the old name.">
+          <input class="input" data-autofocus value={v} onInput={(e) => setV((e.target as HTMLInputElement).value)} aria-invalid={!!err} />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
+function MetricsTable({ metrics, experimentId }: { metrics: MetricSummary[]; experimentId: number }) {
+  const [q, setQ] = useState('');
+  const f = useMemo(() => compileFilter(q), [q]);
+  const rows = metrics.filter((m) => f.test(m.key));
   return (
     <div class="card">
       <div class="card-head">
-        <input type="search" class="filter-input" placeholder="Filter metrics (regex)" value={filter} onInput={(e) => setFilter((e.target as HTMLInputElement).value)} />
-        <span class="hint">{metrics.length} metrics</span>
+        <SearchInput value={q} onInput={setQ} placeholder="Filter metrics (regex)" icon={Search} class="config-search" invalid={!!f.error} />
+        <span class="faint tnum" style={{ fontSize: 12 }}>
+          {rows.length === metrics.length ? `${metrics.length} metrics` : `${rows.length} of ${metrics.length}`}
+        </span>
       </div>
-      <div style={{ overflowX: 'auto' }}>
-        <table class="tbl dense">
-          <thead>
-            <tr>
-              <th>key</th>
-              <th class="num">last</th>
-              <th class="num">min</th>
-              <th class="num">max</th>
-              <th class="num">count</th>
-              <th class="num">first step</th>
-              <th class="num">last step</th>
-              <th>last update</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {metrics.map((m) => (
-              <tr key={m.key}>
-                <td class="mono">{m.key}</td>
-                <td class="num mono">{fmtNum(m.last_value, 6)}</td>
-                <td class="num mono">{fmtNum(m.min, 6)}</td>
-                <td class="num mono">{fmtNum(m.max, 6)}</td>
-                <td class="num">{fmtInt(m.count)}</td>
-                <td class="num">{fmtInt(m.first_step)}</td>
-                <td class="num">{fmtInt(m.last_step)}</td>
-                <td class="muted">{m.last_ts ? relTime(m.last_ts) : '—'}</td>
-                <td>
-                  <a href={api.rawUrl(experimentId, m.key, 'csv')} download>
-                    csv
-                  </a>
-                </td>
+      {rows.length === 0 ? (
+        <EmptyState compact icon={Search} title={metrics.length ? 'No metrics match' : 'No metrics yet'} />
+      ) : (
+        <div class="table-wrap">
+          <table class="table dense">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th class="num">Last</th>
+                <th class="num">Min</th>
+                <th class="num">Max</th>
+                <th class="num">Points</th>
+                <th class="num">Steps</th>
+                <th class="num">Updated</th>
+                <th class="actions" />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {rows.map((m) => (
+                <tr key={m.key}>
+                  <td class="mono">{m.key}</td>
+                  <td class="num mono">{fmtNum(m.last_value, 6)}</td>
+                  <td class="num mono">{fmtNum(m.min, 6)}</td>
+                  <td class="num mono">{fmtNum(m.max, 6)}</td>
+                  <td class="num mono">{fmtInt(m.count)}</td>
+                  <td class="num mono muted">
+                    {fmtInt(m.first_step)}–{fmtInt(m.last_step)}
+                  </td>
+                  <td class="num muted" title={m.last_ts ? absTime(m.last_ts) : ''}>
+                    {m.last_ts ? relTime(m.last_ts) : '—'}
+                  </td>
+                  <td class="actions">
+                    <a class="btn btn-ghost btn-xs" href={api.rawUrl(experimentId, m.key, 'csv')} download data-tip="Full-resolution CSV">
+                      <Download size={13} /> CSV
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
 
-function TagsEditor({ tags, onChange }: { tags: string[]; onChange: (t: string[]) => void }) {
+function TagsEditor({ tags, onChange, editable }: { tags: string[]; onChange: (t: string[]) => void; editable: boolean }) {
+  const [adding, setAdding] = useState(false);
   const [v, setV] = useState('');
   const add = () => {
     const t = v.trim();
     setV('');
+    setAdding(false);
     if (t && !tags.includes(t)) onChange([...tags, t]);
   };
+  if (!tags.length && !editable) return null;
   return (
-    <div class="row wrap" style={{ gap: 4 }}>
+    <div class="exp-tags">
       {tags.map((t) => (
-        <span class="tag" key={t}>
+        <span class="chip tag-chip" key={t}>
           {t}
-          <button title="Remove tag" onClick={() => onChange(tags.filter((x) => x !== t))}>
-            ✕
-          </button>
+          {editable && (
+            <button class="chip-x" aria-label={`Remove tag ${t}`} onClick={() => onChange(tags.filter((x) => x !== t))}>
+              <X size={11} />
+            </button>
+          )}
         </span>
       ))}
-      <input
-        style={{ width: 90, minHeight: 20, padding: '0 5px', fontSize: 12 }}
-        placeholder="+ tag"
-        value={v}
-        onInput={(e) => setV((e.target as HTMLInputElement).value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ',') {
-            e.preventDefault();
-            add();
-          }
-        }}
-        onBlur={add}
-      />
+      {editable &&
+        (adding ? (
+          <input
+            class="input tag-input"
+            autoFocus
+            placeholder="tag name"
+            value={v}
+            onInput={(e) => setV((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                add();
+              } else if (e.key === 'Escape') {
+                e.stopPropagation();
+                setAdding(false);
+                setV('');
+              }
+            }}
+            onBlur={add}
+          />
+        ) : (
+          <button class="chip chip-add" onClick={() => setAdding(true)}>
+            <Plus size={11} /> Add tag
+          </button>
+        ))}
     </div>
   );
 }
 
-function NotesEditor({ notes, onSave }: { notes: string; onSave: (n: string) => void }) {
+function NotesEditor({ notes, onSave, editable }: { notes: string; onSave: (n: string) => Promise<boolean>; editable: boolean }) {
   const [v, setV] = useState(notes);
+  const [busy, setBusy] = useState(false);
   useEffect(() => setV(notes), [notes]);
   const dirty = v !== notes;
+  const save = async () => {
+    setBusy(true);
+    await onSave(v);
+    setBusy(false);
+  };
+  if (!editable)
+    return (
+      <div class="card">
+        {notes ? (
+          <div class="card-body notes-view">{notes}</div>
+        ) : (
+          <EmptyState icon={StickyNote} title="No notes">
+            Nobody has written notes for this experiment yet.
+          </EmptyState>
+        )}
+      </div>
+    );
   return (
-    <div class="col">
-      <textarea rows={7} value={v} placeholder="Notes about this run…" onInput={(e) => setV((e.target as HTMLTextAreaElement).value)} onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && dirty && onSave(v)} />
-      <div class="row">
-        <span class="hint">{dirty ? 'Unsaved changes (Ctrl+Enter to save)' : ''}</span>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-titles">
+          <h2 class="card-title">Notes</h2>
+          <p class="card-desc">Hypotheses, observations, links. Plain text; visible to everyone with access to the project.</p>
+        </div>
+      </div>
+      <div class="card-body">
+        <textarea
+          class="input notes-input"
+          rows={12}
+          value={v}
+          placeholder="What did you change, and what did you observe?"
+          onInput={(e) => setV((e.target as HTMLTextAreaElement).value)}
+          onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && dirty && save()}
+        />
+      </div>
+      <div class="card-foot">
+        <span>{dirty ? 'Unsaved changes · Ctrl+Enter to save' : notes ? 'Saved' : ''}</span>
         <span class="spacer" />
-        <button class="small" disabled={!dirty} onClick={() => setV(notes)}>
-          Revert
-        </button>
-        <button class="small primary" disabled={!dirty} onClick={() => onSave(v)}>
-          Save
-        </button>
+        <Button size="sm" variant="ghost" disabled={!dirty} onClick={() => setV(notes)}>
+          Discard
+        </Button>
+        <Button size="sm" variant="primary" disabled={!dirty} loading={busy} onClick={save}>
+          Save notes
+        </Button>
       </div>
     </div>
   );

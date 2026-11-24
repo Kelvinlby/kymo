@@ -1,0 +1,179 @@
+/* Design tokens. Light is the default; dark is applied by <html data-theme="dark">
+   (resolved from the user's preference, which defaults to the system setting). */
+:root {
+  /* type */
+  --font: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+  --fs-3xl: 30px;
+  --lh: 1.5;
+
+  /* 4px grid */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* radius */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-full: 999px;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+  --t-med: 180ms;
+
+  /* layout */
+  --sb-w: 252px;
+  --sb-w-collapsed: 60px;
+  --header-h: 56px;
+
+  /* surfaces */
+  --bg: #f6f6f8;
+  --bg-sunken: #efeff2;
+  --surface: #ffffff;
+  --surface-2: #f7f7f9;
+  --surface-3: #eeeef2;
+  --surface-hover: rgba(17, 19, 34, 0.045);
+  --surface-active: rgba(17, 19, 34, 0.075);
+  --sidebar: #fbfbfc;
+  --overlay: rgba(14, 15, 22, 0.42);
+
+  --border: rgba(17, 19, 34, 0.08);
+  --border-strong: rgba(17, 19, 34, 0.15);
+  --ring-soft: 0 0 0 1px rgba(17, 19, 34, 0.06);
+
+  /* text (contrast on --surface: 16:1 / 7.4:1 / 4.9:1) */
+  --text: #16171d;
+  --text-2: #4d4f5c;
+  --text-3: #6b6d7a;
+  --text-on-accent: #ffffff;
+
+  /* accent */
+  --accent: #5048e5;
+  --accent-hover: #4239d1;
+  --accent-text: #4339ca;
+  --accent-soft: rgba(80, 72, 229, 0.1);
+  --accent-soft-2: rgba(80, 72, 229, 0.16);
+  --focus: rgba(80, 72, 229, 0.45);
+
+  /* semantic */
+  --running: #1d6fe0;
+  --running-soft: rgba(29, 111, 224, 0.1);
+  --finished: #13804b;
+  --finished-soft: rgba(19, 128, 75, 0.1);
+  --failed: #d0302f;
+  --failed-soft: rgba(208, 48, 47, 0.1);
+  --crashed: #b35a00;
+  --crashed-soft: rgba(179, 90, 0, 0.11);
+  --danger: #cf2d2d;
+  --danger-hover: #b72424;
+  --danger-soft: rgba(207, 45, 45, 0.09);
+  --warning: #a35a00;
+  --warning-soft: rgba(214, 138, 0, 0.12);
+  --success: #13804b;
+  --success-soft: rgba(19, 128, 75, 0.1);
+  --info: #1d6fe0;
+  --info-soft: rgba(29, 111, 224, 0.09);
+
+  /* elevation */
+  --shadow-xs: 0 1px 2px rgba(17, 19, 34, 0.05);
+  --shadow-sm: 0 1px 2px rgba(17, 19, 34, 0.04), 0 1px 3px rgba(17, 19, 34, 0.06);
+  --shadow-md: 0 2px 4px rgba(17, 19, 34, 0.04), 0 6px 16px rgba(17, 19, 34, 0.07);
+  --shadow-lg: 0 4px 12px rgba(17, 19, 34, 0.07), 0 16px 40px rgba(17, 19, 34, 0.14);
+  --card-ring: 0 0 0 1px rgba(17, 19, 34, 0.06);
+
+  /* plot */
+  --plot-axis: #6b6d7a;
+  --plot-grid: rgba(17, 19, 34, 0.07);
+  --plot-tick: rgba(17, 19, 34, 0.14);
+  --plot-cursor: rgba(17, 19, 34, 0.32);
+  --plot-select: rgba(80, 72, 229, 0.1);
+  --plot-select-border: rgba(80, 72, 229, 0.5);
+  --plot-stats: rgba(214, 138, 0, 0.13);
+  --plot-stats-border: rgba(214, 138, 0, 0.6);
+
+  --logo-a: #6d5cff;
+  --logo-b: #2f8cff;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0c0d11;
+  --bg-sunken: #08090c;
+  --surface: #14151b;
+  --surface-2: #191a21;
+  --surface-3: #22232c;
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --surface-active: rgba(255, 255, 255, 0.085);
+  --sidebar: #101116;
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  --border: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --ring-soft: 0 0 0 1px rgba(255, 255, 255, 0.06);
+
+  /* contrast on --surface: 15:1 / 7.6:1 / 5.2:1 */
+  --text: #ececf1;
+  --text-2: #a9abb8;
+  --text-3: #8a8c9a;
+
+  --accent: #5d57e8;
+  --accent-hover: #6c66f0;
+  --accent-text: #a9a6ff;
+  --accent-soft: rgba(124, 118, 255, 0.14);
+  --accent-soft-2: rgba(124, 118, 255, 0.22);
+  --focus: rgba(140, 134, 255, 0.6);
+
+  --running: #5ea2ff;
+  --running-soft: rgba(94, 162, 255, 0.14);
+  --finished: #3fcf8e;
+  --finished-soft: rgba(63, 207, 142, 0.12);
+  --failed: #ff6b6b;
+  --failed-soft: rgba(255, 107, 107, 0.13);
+  --crashed: #f5a524;
+  --crashed-soft: rgba(245, 165, 36, 0.13);
+  --danger: #e5484d;
+  --danger-hover: #f05a5f;
+  --danger-soft: rgba(255, 107, 107, 0.12);
+  --warning: #f5a524;
+  --warning-soft: rgba(245, 165, 36, 0.12);
+  --success: #3fcf8e;
+  --success-soft: rgba(63, 207, 142, 0.12);
+  --info: #5ea2ff;
+  --info-soft: rgba(94, 162, 255, 0.12);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.35), 0 8px 20px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45), 0 24px 56px rgba(0, 0, 0, 0.45);
+  --card-ring: 0 0 0 1px rgba(255, 255, 255, 0.065);
+
+  --plot-axis: #8a8c9a;
+  --plot-grid: rgba(255, 255, 255, 0.06);
+  --plot-tick: rgba(255, 255, 255, 0.12);
+  --plot-cursor: rgba(255, 255, 255, 0.35);
+  --plot-select: rgba(124, 118, 255, 0.16);
+  --plot-select-border: rgba(150, 145, 255, 0.6);
+  --plot-stats: rgba(245, 165, 36, 0.14);
+  --plot-stats-border: rgba(245, 165, 36, 0.65);
+
+  color-scheme: dark;
+}

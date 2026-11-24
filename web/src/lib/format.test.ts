@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileFilter, flattenConfig, fmtNum, groupKeys, naturalCompare, toDate } from './format';
+import { compileFilter, flattenConfig, fmtConfigNumber, fmtConfigValue, fmtNum, groupKeys, naturalCompare, toDate } from './format';
 
 describe('naturalCompare', () => {
   it('orders numbers numerically', () => {
@@ -38,6 +38,21 @@ describe('misc', () => {
   });
   it('flattenConfig', () => {
     expect(flattenConfig({ a: 1, m: { d: 2, e: { f: 'x' } }, l: [1] })).toEqual({ a: 1, 'm.d': 2, 'm.e.f': 'x', l: [1] });
+  });
+  it('flattenConfig flattens arrays of objects by index', () => {
+    expect(flattenConfig({ s: [{ d: 1 }, { d: 2 }], t: ['a', 'b'], e: {} })).toEqual({ 's.0.d': 1, 's.1.d': 2, t: ['a', 'b'], e: {} });
+  });
+  it('fmtConfigNumber', () => {
+    expect(fmtConfigNumber(0.0003)).toBe('3e-4');
+    expect(fmtConfigNumber(0.00025)).toBe('2.5e-4');
+    expect(fmtConfigNumber(4194304)).toBe('4,194,304');
+    expect(fmtConfigNumber(0.95)).toBe('0.95');
+    expect(fmtConfigNumber(1.5e10)).toBe('15,000,000,000');
+    expect(fmtConfigNumber(2.5e-9)).toBe('2.5e-9');
+    expect(fmtConfigNumber(1e20)).toBe('1e20');
+    expect(fmtConfigNumber(0)).toBe('0');
+    expect(fmtConfigValue([1, 'x', true])).toBe('1, x, true');
+    expect(fmtConfigValue(null)).toBe('null');
   });
   it('fmtNum', () => {
     expect(fmtNum(null)).toBe('—');
