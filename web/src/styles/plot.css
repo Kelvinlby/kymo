@@ -274,6 +274,8 @@
 .plot-host {
   position: absolute;
   inset: 0 10px 8px 4px;
+  /* keep style/layout/paint invalidation from cursor moves inside each chart */
+  contain: strict;
 }
 .panel.shift .u-select {
   background: var(--plot-stats) !important;
@@ -514,8 +516,9 @@
   max-width: 360px;
   padding: 8px 10px 7px;
   border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  backdrop-filter: blur(8px);
+  /* no backdrop-filter: re-blurring the chart under a tooltip that moves every frame is a constant GPU cost */
+  background: color-mix(in srgb, var(--surface) 97%, transparent);
+  will-change: transform;
   box-shadow:
     var(--shadow-lg),
     var(--card-ring);
@@ -524,7 +527,7 @@
   color: var(--text);
 }
 :root[data-theme='dark'] .plot-tip {
-  background: color-mix(in srgb, var(--surface-3) 94%, transparent);
+  background: color-mix(in srgb, var(--surface-3) 97%, transparent);
 }
 .tip-head {
   display: flex;

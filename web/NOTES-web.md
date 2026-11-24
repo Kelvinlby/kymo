@@ -68,6 +68,12 @@ min/max envelope as a faint band. Global toolbar: regex key filter, EMA smoothin
 time, log-y, outlier clipping (top/bottom p%), resolution (max_points), live. Per panel: log-y, smoothing override,
 stats table, expand, CSV (as plotted) / PNG export, links to full-resolution `/series/raw` CSV per run.
 
+Hover cost: mousemove is coalesced to one cursor update per animation frame (custom `cursor.bind`; mousedown/mouseup
+flush a pending move so drags stay exact). Only each run's main series has a hover dot (no DOM nodes for raw/min/max).
+The tooltip never reads layout during a move (overlay rect = uPlot's cached `u.rect`, own size via ResizeObserver) and
+only rewrites its HTML when the content changed; `.plot-host` uses `contain: strict`. Measured on the mock (6 panels,
+8 moves/frame): ~17 ms → ~0.2 ms median main-thread time per frame.
+
 Shortcuts: `/` metric filter, `s` smoothing on/off, `l` log-y, `x` cycle x axis, `f` fullscreen the hovered chart,
 `r` runs pane, `?` help, `[` sidebar, `g o / g p / g s` navigation, Esc closes the top-most layer.
 

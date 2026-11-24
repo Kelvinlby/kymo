@@ -74,12 +74,24 @@ if (typeof window !== 'undefined') {
 }
 
 let tipEl: HTMLDivElement | null = null;
+const tipSize = { w: 260, h: 120 };
 function tooltipEl(): HTMLDivElement {
   if (!tipEl) {
     tipEl = document.createElement('div');
     tipEl.className = 'plot-tip';
     tipEl.style.position = 'fixed';
     document.body.appendChild(tipEl);
+    new ResizeObserver((es) => {
+      const e = es[es.length - 1];
+      const b = e.borderBoxSize?.[0];
+      const w = b ? b.inlineSize : e.contentRect.width;
+      const h = b ? b.blockSize : e.contentRect.height;
+      if (w > 0 && h > 0) {
+        // keep the last real size while hidden (display:none reports 0×0)
+        tipSize.w = w;
+        tipSize.h = h;
+      }
+    }).observe(tipEl);
   }
   return tipEl;
 }
@@ -114,6 +126,10 @@ export class PanelController {
   private shiftDrag = false;
   private refreshQueued = false;
   private statsBand: HTMLDivElement | null = null;
+  private pendingMove: MouseEvent | null = null;
+  private moveRaf = 0;
+  private moveHandler: ((e: MouseEvent) => unknown) | null = null;
+  private tipHtml = '';
   private ui: PanelUiState = { loading: false, zoomed: false, statsRange: null, empty: false, downsampled: false, error: null, pointCount: 0 };
   statsWanted = false;
   /** short title shown in the tooltip header */
@@ -344,7 +360,25 @@ export class PanelController {
     this.positionStatsBand();
   }
 
+  /** Run the coalesced mousemove now (from the frame callback, or before mousedown/mouseup). */
+  private flushMoveNow() {
+    if (!this.moveRaf) return;
+    cancelAnimationFrame(this.moveRaf);
+    this.moveRaf = 0;
+    const e = this.pendingMove;
+    this.pendingMove = null;
+    if (e && this.moveHandler && this.u) this.moveHandler(e);
+  }
+
+  private cancelMove() {
+    if (this.moveRaf) cancelAnimationFrame(this.moveRaf);
+    this.moveRaf = 0;
+    this.pendingMove = null;
+  }
+
   private destroyPlot() {
+    this.cancelMove();
+    this.tipHtml = '';
     if (this.u) {
       if (this.hovered) tooltipEl().style.display = 'none';
       this.hovered = false;
@@ -435,6 +469,14 @@ export class PanelController {
         },
         drag: { x: true, y: false, setScale: false, dist: 4 },
         points: {
+          // only the main line of each run gets a hover dot; raw/min/max series get no DOM element,
+          // so a cursor move touches 1 element per run instead of 4
+          show: (_u, si) => {
+            if (!isMain(si)) return undefined as unknown as HTMLElement;
+            const pt = document.createElement('div');
+            pt.style.borderWidth = '2px';
+            return pt;
+          },
           size: (_u, si) => (isMain(si) ? 7 : 0),
           width: 2,
           fill: (_u, si) => (isMain(si) ? theme().surface : 'transparent'),
@@ -442,7 +484,28 @@ export class PanelController {
         },
         dataIdx: (u, si, closest) => nearestDefined(u.data[si] as unknown as ArrayLike<number | null | undefined>, closest),
         bind: {
+          // Mice fire mousemove far more often than the display refreshes (often 500-1000 Hz). Coalesce
+          // them to one cursor update per frame: uPlot's update, the sync fan-out to every other panel
+          // and the tooltip then run at most once per frame. The latest event is used, so no position
+          // is lost; mousedown/mouseup flush a pending move first so drags start and end exactly.
+          mousemove: (_u, _t, handler) => {
+            self.moveHandler = handler;
+            return (e: MouseEvent) => {
+              self.pendingMove = e;
+              if (!self.moveRaf) self.moveRaf = requestAnimationFrame(() => self.flushMoveNow());
+              return null;
+            };
+          },
+          mouseleave: (_u, _t, handler) => (e: MouseEvent) => {
+            self.cancelMove();
+            return handler(e);
+          },
+          mouseup: (_u, _t, handler) => (e: MouseEvent) => {
+            self.flushMoveNow();
+            return handler(e);
+          },
           mousedown: (_u, _t, handler) => (e: MouseEvent) => {
+            self.flushMoveNow();
             self.shiftDrag = e.shiftKey;
             self.host.parentElement?.classList.toggle('shift', e.shiftKey);
             return handler(e);
@@ -602,11 +665,20 @@ export class PanelController {
     }
     if (rows.length > MAX) html += `<div class="tip-more">+${rows.length - MAX} more runs</div>`;
     if (smooth) html += `<div class="tip-foot">smoothed · <span class="raw">raw</span></div>`;
-    tip.innerHTML = html;
-    tip.style.display = 'block';
-    const rect = u.over.getBoundingClientRect();
-    const tw = tip.offsetWidth;
-    const th = tip.offsetHeight;
+    // Rewriting identical HTML still costs a parse + style/layout pass, and moving within one data
+    // point produces the same rows, so only touch the DOM when the content changed.
+    if (html !== this.tipHtml || tip.style.display !== 'block') {
+      this.tipHtml = html;
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+    }
+    // No layout reads here: getBoundingClientRect/offsetWidth right after the cursor writes above (on
+    // this and every synced panel) would force a synchronous layout of the whole page on every move.
+    // uPlot keeps the overlay rect cached (refreshed on scroll/resize); the tooltip's size comes from
+    // a ResizeObserver, so it is at most one frame stale when the content changes.
+    const rect = u.rect;
+    const tw = tipSize.w;
+    const th = tipSize.h;
     let x = rect.left + left + 14;
     if (x + tw > window.innerWidth - 8) x = rect.left + left - tw - 14;
     let y = rect.top + (u.cursor.top ?? 0) + 14;
