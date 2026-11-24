@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,6 +7,8 @@ name = "kymo-logger"
 version = "0.1.0"
 description = "Non-blocking Python logging SDK for the Kymo ML experiment tracker"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "Kelvin" }]
 keywords = ["machine-learning", "experiment-tracking", "logging", "metrics"]
