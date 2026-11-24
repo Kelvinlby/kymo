@@ -160,7 +160,7 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
           {ov.smoothing != null && <Badge tone="accent">EMA {ov.smoothing.toFixed(2)}</Badge>}
         </span>
         <div class={cx('panel-tools', (menuOpen || ui.zoomed) && 'keep')}>
-          {ui.zoomed && <IconButton icon={RotateCcw} label="Reset zoom" kbd="double-click" onClick={() => ctrl.current?.resetZoom()} active />}
+          {ui.zoomed && <IconButton icon={RotateCcw} label="Reset zoom" kbd="double-click" onClick={() => ctrl.current?.resetZoomSynced()} active />}
           {!normalize && (
             <Button
               size="xs"

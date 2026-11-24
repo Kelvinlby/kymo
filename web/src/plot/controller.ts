@@ -119,6 +119,9 @@ function extentOf(xs: Float64Array[]): [number, number] | null {
   return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null;
 }
 
+/** live controllers by sync key: a drag-zoom (and its reset) applies to every chart of one grid */
+const syncGroups = new Map<string, Set<PanelController>>();
+
 export class PanelController {
   private u: uPlot | null = null;
   private visible = false;
@@ -179,6 +182,9 @@ export class PanelController {
   ) {
     this.settings = settings;
     (host as unknown as { __kymoPanel: PanelController }).__kymoPanel = this; // debugging / e2e hooks
+    let g = syncGroups.get(syncKey);
+    if (!g) syncGroups.set(syncKey, (g = new Set()));
+    g.add(this);
   }
 
   // ------------------------------------------------------------------ inputs
@@ -266,6 +272,9 @@ export class PanelController {
 
   destroy() {
     this.destroyed = true;
+    const g = syncGroups.get(this.syncKey);
+    g?.delete(this);
+    if (g && !g.size) syncGroups.delete(this.syncKey);
     if (this.wheelTimer) clearTimeout(this.wheelTimer);
     this.stopAnim(false);
     this.unsub?.();
@@ -586,7 +595,7 @@ export class PanelController {
           dblclick: () => (e: MouseEvent) => {
             if (e.button !== 0) return null;
             e.preventDefault();
-            self.resetZoom();
+            self.resetZoomSynced();
             return null;
           },
         },
@@ -646,15 +655,42 @@ export class PanelController {
     u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
     this.host.parentElement?.classList.remove('shift');
     if (this.shiftDrag || shiftHeld) this.setStatsRange([x0, x1]);
-    else this.zoomTo(x0, x1);
+    else for (const p of this.peers()) p.zoomTo(x0, x1);
+  }
+
+  /** this chart and every other live chart sharing its sync key */
+  private peers(): Iterable<PanelController> {
+    return syncGroups.get(this.syncKey) ?? [this];
+  }
+
+  /** Reset this chart, and drop the x zoom of the other charts of the grid (their stats ranges and y windows stay). */
+  resetZoomSynced() {
+    this.resetZoom();
+    for (const p of this.peers()) if (p !== this) p.resetXZoom();
+  }
+
+  private resetXZoom() {
+    if (!this.zoomX) return;
+    if (this.wheelTimer) clearTimeout(this.wheelTimer);
+    this.wheelTimer = null;
+    this.stopAnim(false);
+    this.zoomX = null;
+    this.zoomSteps = null;
+    this.setUi({ zoomed: !!this.zoomY });
+    this.data.clear();
+    this.refresh();
   }
 
   /** Zoom to an x range: rescale instantly, then refetch the window at full resolution. */
   zoomTo(x0: number, x1: number) {
     if (!(x1 > x0)) return;
     this.stopAnim(false);
+    if (this.wheelTimer) clearTimeout(this.wheelTimer);
+    this.wheelTimer = null;
     this.zoomX = [x0, x1];
-    this.zoomSteps = this.xToSteps(x0, x1);
+    // a chart that never loaded has no x -> step mapping (time modes): fetch the overview, drawn zoomed
+    const known = this.settings.xMode === 'step' || this.prepared.length > 0 || this.overview.length > 0;
+    this.zoomSteps = known ? this.xToSteps(x0, x1) : null;
     this.setUi({ zoomed: true });
     if (this.u) this.u.setScale('x', { min: x0, max: x1 });
     this.refresh();
@@ -683,7 +719,7 @@ export class PanelController {
    *                  page and ctrl/⌘ + wheel (or pinch) zooms x · alt + wheel zooms y
    *                  shift + wheel or a sideways wheel/swipe pans x and keeps y where it is
    *                  right-button drag pans both axes
-   * Over an axis:    wheel zooms that axis · shift / sideways pans it
+   * Over an axis:    (fullscreen only) wheel zooms that axis · shift / sideways pans it
    * Wheel steps ease in over a few frames (so a step close to the grid spacing does not read as
    * moving backwards); the x window is refetched at full resolution once the wheel settles.
    */
@@ -695,8 +731,9 @@ export class PanelController {
     const py = e.clientY - r.top;
     const inX = px >= 0 && px <= r.width;
     const inY = py >= 0 && py <= r.height;
-    const onXAxis = inX && py > r.height;
-    const onYAxis = inY && px < 0;
+    // axis scrolling only in fullscreen: in the grid it would hijack page scrolling along every chart edge
+    const onXAxis = this.wheelZoom && inX && py > r.height;
+    const onYAxis = this.wheelZoom && inY && px < 0;
     if (!(inX && inY) && !onXAxis && !onYAxis) return;
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1;
     const dx = e.deltaX * unit;
