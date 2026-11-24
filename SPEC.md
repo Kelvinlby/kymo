@@ -21,8 +21,13 @@ Toolchain on this machine: Rust 1.100, Node 24 / npm 11, Python 3.14 + uv, Docke
 * **User** — `id, username (unique, [a-z0-9_.-]{2,32}), display_name, is_admin, disabled, created_at`.
   Exactly **one admin** (created via bootstrap). Admin has super power: sees/edits/deletes everything, manages users,
   invites, site policy.
-* **Project** — `id, owner_id, name ([A-Za-z0-9_.-]{1,64}, unique per owner), description, shared (bool), created_at`.
-  Private to owner + admin. `shared=true` → read-only visible to all logged-in users.
+* **Project** — `id, owner_id, name ([A-Za-z0-9_.-]{1,64}, unique per owner), description, created_at`, plus sharing:
+  * **members**: a list of `(user, role)` picked from the user list, role `viewer` (read) or `editor` (read + edit
+    experiments + log into it via the SDK/API). Only the owner and the admin can change members, rename or delete the project.
+  * **everyone**: `null | "viewer" | "editor"` — a role for all users, including ones created later. An explicit member
+    role wins over `everyone` when it is higher.
+  The admin can do everything. Each project object returned to a user carries `role`: `owner|admin|editor|viewer`.
+  (Replaces the old `shared: bool`; migrate `shared=true` → `everyone="viewer"`.)
 * **Experiment** — `id, project_id, name (1–128 chars, unique per project), status (running|finished|failed|crashed),
   config (JSON object), tags (string[]), notes (string), created_at, updated_at (last ingest), host?`
 * **Metric (series)** — `id, experiment_id, key` (e.g. `train/loss`). Points are `(step: i64, value: f64, ts: f64 unix seconds)`.
@@ -124,10 +129,18 @@ the first one is canonical, e.g. `http://localhost:8080,http://localhost:5173` f
   ]
 }
 ```
-* Project and experiment are **auto-created** by name under the token owner (if the experiment's project exists and is
-  owned by someone else, it's still resolved in the token owner's namespace — names are per-owner).
-* Values: JSON numbers; bools are 0/1; strings `"NaN"`, `"Infinity"`, `"-Infinity"` → those floats. Anything else is
-  silently dropped and counted in `dropped`. Metric keys: 1–256 bytes UTF-8, no control chars.
+* Project and experiment are **auto-created** by name under the token owner. `"project": "alice/llm-pretrain"` refers
+  to another user's project; the token owner must be an `editor` there (403 otherwise; such projects are never auto-created).
+* **Hand-written JSON is a first-class client** (curl, any language, any framework — the SDK is just a convenience).
+  The server therefore also accepts:
+  * **Nested metric objects**, flattened with `/`: `{"train": {"loss": 2.3}}` ≡ `{"train/loss": 2.3}`.
+  * **Missing `step`**: the server assigns `last_step + 1` of that experiment, in request order. Missing `ts`: server time.
+  * **Single-point shorthand**: top-level `metrics` (+ optional `step`, `ts`) instead of `points`:
+    `{"project": "p", "experiment": "e", "metrics": {"loss": 1.2}}`.
+  * Missing `points`/`metrics` (config/status-only update) is valid.
+* Values: JSON numbers; bools are 0/1; strings `"NaN"`, `"Infinity"`, `"-Infinity"` → those floats. Anything else
+  (other strings, arrays, null) is dropped and counted in `dropped`; the response also lists up to 20 example
+  `dropped_keys` so hand-written clients can see what was ignored. Metric keys: 1–256 bytes UTF-8, no control chars.
 * Response `200 {"ok": true, "experiment_id": 7, "accepted": 123, "dropped": 0}` **only after the data is durably committed**.
   `400` malformed (client must NOT retry), `401/403` auth (don't retry), `413` too large (client should split),
   `429`/`5xx` (client retries with backoff; server may send `Retry-After`).
@@ -137,9 +150,14 @@ the first one is canonical, e.g. `http://localhost:8080,http://localhost:5173` f
 
 ## 4. Read API (cookie session or bearer token)
 
-* `GET /api/v1/projects` → `[{id, name, description, shared, owner: {id, username}, created_at, experiment_count, last_activity}]`
-  (own + shared; admin sees all)
-* `POST /api/v1/projects {name, description?}` · `PATCH /api/v1/projects/{id} {name?, description?, shared?}` · `DELETE /api/v1/projects/{id}`
+* `GET /api/v1/projects` → `[{id, name, description, everyone, member_count, role, owner: {id, username, display_name}, created_at, experiment_count, running_count, last_activity}]`
+  (owned + shared with me; admin sees all)
+* `POST /api/v1/projects {name, description?}` · `PATCH /api/v1/projects/{id} {name?, description?}` · `DELETE /api/v1/projects/{id}`
+* `GET /api/v1/users` → `[{id, username, display_name}]` — the user directory (active users, for the share picker).
+  Any full session; not API tokens.
+* `GET /api/v1/projects/{id}/sharing` → `{"everyone": null|"viewer"|"editor", "members": [{"user": {id, username, display_name}, "role": "viewer"|"editor"}]}`
+* `PUT /api/v1/projects/{id}/sharing {"everyone": ..., "members": [{"user_id": 2, "role": "editor"}]}` — replaces the
+  whole sharing state; owner/admin only; the owner can't be a member of their own project.
 * `GET /api/v1/projects/{id}` → project object
 * `GET /api/v1/projects/{id}/experiments` → `[{id, name, status, tags, created_at, updated_at, host, config, metric_count, last_step}]`
   sorted by `created_at desc`.
@@ -187,8 +205,10 @@ Hard requirements:
 * **Never block the training loop, never raise into it.** `log()` must only snapshot the dict (shallow copy) and append to a
   `collections.deque` — target ≤ 2 µs/call. All flattening (`{"eval":{"acc":1}}` → `eval/acc`), value conversion, JSON,
   compression and HTTP happen on a background daemon thread.
-* **Do not force GPU sync in the caller thread.** Torch/JAX/numpy scalars/0-d tensors are stored by reference and converted
-  (`.item()` / `float()`) on the background thread. Detect them by duck-typing (`hasattr(v, "item")`) — no torch import.
+* **Framework-neutral.** The SDK knows nothing about any ML framework, launcher or cluster: input is a JSON-like dict of
+  numbers. Values that are not plain Python numbers are converted generically on the background thread (anything with
+  `__float__`, or an `.item()` returning a number — covers numpy and array-library scalars without importing them or
+  naming them in docs). Converting on the background thread also means the caller never waits on a device sync.
 * Batching: flush every `flush_interval` (default 1.0 s) or when ≥ `max_batch_points` buffered; gzip when body > 4 KiB.
 * Retry with exponential backoff + full jitter (0.5 s → 60 s cap) on network errors / 429 / 5xx, honoring `Retry-After`;
   never retry 400/401/403 (log one warning, drop). On 413 split the batch.
@@ -200,9 +220,8 @@ Hard requirements:
   basic-auth in the URL). Keep persistent connections (keep-alive) when possible.
 * Exit: `atexit` flush with timeout `KYMO_EXIT_TIMEOUT` (default 30 s), then spool the rest; marks experiment `finished`
   (or `failed` if exiting due to an uncaught exception — use `sys.excepthook` chaining).
-* Distributed: by default only log when `RANK`/`LOCAL_RANK`... global rank (env `RANK`, falling back to `SLURM_PROCID`,
-  `OMPI_COMM_WORLD_RANK`) is 0 or unset; other ranks get a no-op run. `kymo.init(all_ranks=True)` logs every rank with
-  metrics prefixed `rank{N}/`.
+* Multi-process: no auto-detection of launcher env vars. Every process that calls `init()` logs. Users decide who logs
+  (e.g. `kymo.init(..., enabled=(my_rank == 0))`); `enabled=False` returns a no-op run.
 * Fork safety (`os.register_at_fork`): child gets a fresh, disabled-by-default background state (no deadlocked locks).
 * `KYMO_DISABLED=1` → everything is a no-op. `KYMO_OFFLINE=1` → only spool to disk.
 * Zero runtime dependencies (stdlib only). Python ≥ 3.9. Packaged with `pyproject.toml` (hatchling), tests with pytest.

@@ -1,0 +1,213 @@
+//! POST /api/v1/ingest — the hot path.
+
+use crate::auth::ReadAuth;
+use crate::error::{ApiError, ApiResult};
+use crate::ingest::{ParseError, parse};
+use crate::store::{Row, prepare_rows};
+use crate::util::{now_ms, valid_experiment_name, valid_project_name, valid_status};
+use crate::{AppState, MAX_INGEST_BODY, MAX_INGEST_VALUES};
+use axum::Json;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode, header};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Value, json};
+use std::io::Read;
+use std::sync::Arc;
+
+fn decode_body(headers: &HeaderMap, body: Bytes) -> ApiResult<Bytes> {
+    let enc = headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let limit = MAX_INGEST_BODY as u64 + 1;
+    let mut out = Vec::new();
+    let res = match enc.as_str() {
+        "" | "identity" => return Ok(body),
+        "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(&body[..]).take(limit).read_to_end(&mut out),
+        "zstd" => match zstd::stream::read::Decoder::new(&body[..]) {
+            Ok(d) => d.take(limit).read_to_end(&mut out),
+            Err(e) => Err(e),
+        },
+        "deflate" => flate2::read::ZlibDecoder::new(&body[..]).take(limit).read_to_end(&mut out),
+        other => {
+            return Err(ApiError::new(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_encoding",
+                format!("unsupported Content-Encoding '{other}'"),
+            ));
+        }
+    };
+    if let Err(e) = res {
+        return Err(ApiError::invalid("bad_encoding", format!("could not decompress body: {e}")));
+    }
+    if out.len() > MAX_INGEST_BODY {
+        return Err(ApiError::too_large("decompressed body exceeds 64 MiB"));
+    }
+    Ok(Bytes::from(out))
+}
+
+struct Prepared {
+    exp_id: i64,
+    rows: Vec<Row>,
+    accepted: usize,
+    dropped: usize,
+}
+
+/// CPU part of ingest (decode, parse, resolve ids, build rows). Runs on the blocking pool.
+fn prepare(s: &AppState, user_id: i64, headers: &HeaderMap, body: Bytes) -> ApiResult<Prepared> {
+    let body = decode_body(headers, body)?;
+    let p = match parse(&body, MAX_INGEST_VALUES) {
+        Ok(p) => p,
+        Err(ParseError::TooMany) => {
+            return Err(ApiError::too_large(format!("more than {MAX_INGEST_VALUES} values in one request")));
+        }
+        Err(ParseError::Malformed(m)) => return Err(ApiError::invalid("malformed", format!("invalid ingest body: {m}"))),
+    };
+    let project = p.project.as_deref().ok_or_else(|| ApiError::invalid("malformed", "missing 'project'"))?;
+    let experiment = p.experiment.as_deref().ok_or_else(|| ApiError::invalid("malformed", "missing 'experiment'"))?;
+    if !valid_project_name(project) {
+        return Err(ApiError::invalid("invalid_name", "project name must match [A-Za-z0-9_.-]{1,64}"));
+    }
+    if !valid_experiment_name(experiment) {
+        return Err(ApiError::invalid("invalid_name", "experiment name must be 1-128 printable characters"));
+    }
+    if let Some(st) = &p.status {
+        if !valid_status(st) {
+            return Err(ApiError::invalid("invalid_status", "status must be running|finished|failed|crashed"));
+        }
+    }
+    if p.host.as_ref().is_some_and(|h| h.len() > 256) {
+        return Err(ApiError::invalid("invalid_host", "host too long"));
+    }
+
+    // Resolve (and auto-create) project + experiment in the caller's namespace.
+    let ckey = format!("{user_id}\0{project}\0{experiment}");
+    let now = now_ms();
+    let has_meta = p.config.is_some() || p.status.is_some() || p.host.is_some();
+    let cached = s.exp_cache.get(&ckey).map(|v| *v);
+    let touch_due = cached.is_none_or(|id| s.exp_touch.get(&id).is_none_or(|t| now - *t >= 1000));
+    let exp_id = if cached.is_some() && !has_meta && !touch_due {
+        cached.unwrap()
+    } else {
+        let id = s.db.with(|c| {
+            let tx = c.transaction()?;
+            let id = match cached {
+                Some(id) => id,
+                None => {
+                    tx.execute(
+                        "INSERT INTO projects(owner_id, name, created_at) VALUES(?1,?2,?3)
+                         ON CONFLICT(owner_id, name) DO NOTHING",
+                        params![user_id, project, now],
+                    )?;
+                    let pid: i64 = tx.query_row(
+                        "SELECT id FROM projects WHERE owner_id=?1 AND name=?2",
+                        params![user_id, project],
+                        |r| r.get(0),
+                    )?;
+                    tx.execute(
+                        "INSERT INTO experiments(project_id, name, created_at, updated_at) VALUES(?1,?2,?3,?3)
+                         ON CONFLICT(project_id, name) DO NOTHING",
+                        params![pid, experiment, now],
+                    )?;
+                    tx.query_row(
+                        "SELECT id FROM experiments WHERE project_id=?1 AND name=?2",
+                        params![pid, experiment],
+                        |r| r.get(0),
+                    )?
+                }
+            };
+            if let Some(cfg) = &p.config {
+                let cur: Option<String> =
+                    tx.query_row("SELECT config FROM experiments WHERE id=?1", [id], |r| r.get(0)).optional()?;
+                let mut obj = cur
+                    .and_then(|c| serde_json::from_str::<serde_json::Map<String, Value>>(&c).ok())
+                    .unwrap_or_default();
+                for (k, v) in cfg {
+                    obj.insert(k.clone(), v.clone());
+                }
+                let txt = Value::Object(obj).to_string();
+                if txt.len() > 1 << 20 {
+                    return Err(ApiError::too_large("experiment config exceeds 1 MiB"));
+                }
+                tx.execute("UPDATE experiments SET config=?1 WHERE id=?2", params![txt, id])?;
+            }
+            if let Some(st) = &p.status {
+                tx.execute("UPDATE experiments SET status=?1 WHERE id=?2", params![st.as_ref(), id])?;
+            }
+            if let Some(h) = &p.host {
+                tx.execute("UPDATE experiments SET host=?1 WHERE id=?2", params![h.as_ref(), id])?;
+            }
+            tx.execute("UPDATE experiments SET updated_at=?1 WHERE id=?2", params![now, id])?;
+            tx.commit()?;
+            Ok(id)
+        })?;
+        s.exp_cache.insert(ckey, id);
+        s.exp_touch.insert(id, now);
+        id
+    };
+
+    // Intern series ids: one read lock for the whole request, create the missing ones.
+    let keys = s.store.exp_keys(exp_id)?;
+    let mut rows = Vec::with_capacity(p.values.len());
+    let mut missing: Vec<&str> = Vec::new();
+    {
+        let m = keys.map.read();
+        let mut last: (&str, i64) = ("\u{0}\u{0}", 0);
+        for v in &p.values {
+            let k: &str = &v.key;
+            let sid = if k == last.0 {
+                last.1
+            } else if let Some(&sid) = m.get(k) {
+                last = (k, sid);
+                sid
+            } else {
+                missing.push(k);
+                continue;
+            };
+            rows.push(Row { sid, step: v.step, value: v.value, ts: v.ts });
+        }
+    }
+    if !missing.is_empty() {
+        missing.sort_unstable();
+        missing.dedup();
+        if missing.len() > 100_000 {
+            return Err(ApiError::invalid("too_many_keys", "too many distinct metric keys in one request"));
+        }
+        s.store.create_series(exp_id, &missing)?;
+        let m = keys.map.read();
+        // Second pass only over values whose key was missing (keeps arrival order per key).
+        rows.clear();
+        for v in &p.values {
+            if let Some(&sid) = m.get(&*v.key) {
+                rows.push(Row { sid, step: v.step, value: v.value, ts: v.ts });
+            }
+        }
+    }
+    let accepted = rows.len();
+    prepare_rows(&mut rows);
+    Ok(Prepared { exp_id, rows, accepted, dropped: p.dropped + (p.values.len() - accepted) })
+}
+
+pub async fn ingest(
+    State(s): State<Arc<AppState>>,
+    ReadAuth(p): ReadAuth,
+    headers: HeaderMap,
+    body: Result<Bytes, axum::extract::rejection::BytesRejection>,
+) -> ApiResult<Json<Value>> {
+    let body = body.map_err(|e| {
+        if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            ApiError::too_large("request body exceeds 64 MiB")
+        } else {
+            ApiError::bad_request(e.body_text())
+        }
+    })?;
+    let uid = p.user.id;
+    let s2 = s.clone();
+    let prep = tokio::task::spawn_blocking(move || prepare(&s2, uid, &headers, body)).await??;
+    if !prep.rows.is_empty() {
+        s.store.write(prep.exp_id, prep.rows).await?;
+    }
+    Ok(Json(json!({"ok": true, "experiment_id": prep.exp_id, "accepted": prep.accepted, "dropped": prep.dropped})))
+}

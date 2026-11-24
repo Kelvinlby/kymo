@@ -5,3 +5,8 @@ data/
 __pycache__/
 *.egg-info/
 .venv/
+e2e/.spool/
+demo/CREDENTIALS.md
+demo/.spool/
+demo/server.log
+demo/live.log
