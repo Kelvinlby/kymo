@@ -115,6 +115,10 @@ pub const META_MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE projects ADD COLUMN last_backup_at INTEGER;
     "#,
+    // v4: API tokens can be switched off without deleting them
+    r#"
+    ALTER TABLE api_tokens ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub const SHARD_MIGRATIONS: &[&str] = &[

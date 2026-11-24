@@ -296,3 +296,53 @@ async fn token_limits_and_csrf() {
     assert_eq!(t2.get("/api/v1/projects").await.0, 200);
     h.stop().await;
 }
+
+#[tokio::test]
+async fn token_disable_enable() {
+    let h = Harness::new().await;
+    let (mut admin, _pk) = h.admin().await;
+    let mut alice = h.user(&mut admin, "alice").await;
+    let mut bob = h.user(&mut admin, "bob").await;
+    let mut tok = alice.token().await;
+    let body = json!({"project": "p", "experiment": "e", "points": [{"step": 1, "metrics": {"m": 1.0}}]});
+    // used once, so the token sits in the auth cache when it gets disabled
+    let (s, _) = tok.ingest(body.clone()).await;
+    assert_eq!(s, 200);
+    let (_, list) = alice.get("/api/v1/tokens").await;
+    let id = list[0]["id"].as_i64().unwrap();
+    assert_eq!(list[0]["disabled"], false);
+
+    // only the owner, only from a session
+    let (s, _) = bob.patch(&format!("/api/v1/tokens/{id}"), json!({"disabled": true})).await;
+    assert_eq!(s, 404);
+    let (s, v) = tok.patch(&format!("/api/v1/tokens/{id}"), json!({"disabled": true})).await;
+    assert_eq!((s, v["code"].as_str()), (403, Some("token_not_allowed")));
+
+    let (s, v) = alice.patch(&format!("/api/v1/tokens/{id}"), json!({"disabled": true})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["disabled"], true);
+    assert_eq!(v["name"], "sdk");
+    for _ in 0..3 {
+        let (s, v) = tok.ingest(body.clone()).await;
+        assert_eq!((s, v["code"].as_str()), (401, Some("token_disabled")), "{v}");
+        let (s, _) = tok.get("/api/v1/projects").await;
+        assert_eq!(s, 401);
+    }
+    let (_, list) = alice.get("/api/v1/tokens").await;
+    assert_eq!(list[0]["disabled"], true);
+
+    // back on: works immediately, nothing else changed
+    let (s, v) = alice.patch(&format!("/api/v1/tokens/{id}"), json!({"disabled": false})).await;
+    assert_eq!((s, v["disabled"].as_bool()), (200, Some(false)));
+    let (s, v) = tok.ingest(body.clone()).await;
+    assert_eq!(s, 200, "{v}");
+
+    // delete still revokes for good
+    let (s, _) = alice.delete(&format!("/api/v1/tokens/{id}")).await;
+    assert_eq!(s, 200);
+    let (s, v) = tok.ingest(body).await;
+    assert_eq!((s, v["code"].as_str()), (401, Some("invalid_token")));
+    let (s, _) = alice.patch(&format!("/api/v1/tokens/{id}"), json!({"disabled": false})).await;
+    assert_eq!(s, 404);
+    h.stop().await;
+}

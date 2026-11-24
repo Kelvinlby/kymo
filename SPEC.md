@@ -103,7 +103,9 @@ the first one is canonical, e.g. `http://localhost:8080,http://localhost:5173` f
 
 ### 2.6 API tokens (for the Python SDK)
 * `POST /api/v1/tokens {name}` → `{id, name, token, created_at}`; token = `kymo_` + 40 base62 chars, shown once; stored as sha256.
-* `GET /api/v1/tokens` → `[{id, name, prefix ("kymo_abcd"), created_at, last_used_at}]`; `DELETE /api/v1/tokens/{id}`.
+* `GET /api/v1/tokens` → `[{id, name, prefix ("kymo_abcd"), created_at, last_used_at, disabled}]`; `DELETE /api/v1/tokens/{id}`.
+* `PATCH /api/v1/tokens/{id} {"disabled": true|false}` → the token object. A disabled token is kept (same secret) but every
+  request with it gets `401 {"code": "token_disabled"}` until it is enabled again; takes effect on the next request.
 * Usage: `Authorization: Bearer kymo_...`. Bearer tokens may call **ingest** and **all read endpoints** of their owner's
   scope, never auth/admin/token-management endpoints. Token lookups must be cached in memory (sha256 → user, invalidated on
   delete/disable); `last_used_at` updated at most once per minute.

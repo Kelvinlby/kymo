@@ -114,6 +114,16 @@ or against a running server with `KYMO_HOST=... KYMO_API_KEY=kymo_... kymo-bench
 * Rate limits (fixed 60 s window, in memory): login 10 per IP+username, setup/signup/reset 10 per IP,
   invite lookups 60 per IP, password change 10 per user.
 
+### Token on/off switch (meta schema v4: `api_tokens.disabled`)
+
+* `PATCH /tokens/{id} {"disabled"}` (owner, full session). Disabling drops the token's auth-cache entry; disabled tokens
+  are never cached, so re-enabling needs no cache work. They get `401 token_disabled` (vs `invalid_token` for unknown or
+  deleted ones). A revocation generation counter (`AuthState.token_gen`, bumped by every disable/delete/user revocation)
+  stops a lookup that raced with a revocation from re-caching the token as valid — this also closed the same window
+  for `DELETE /tokens/{id}`.
+* The Python SDK treats any 401 as a rejected key: it warns once and drops live batches (training is never blocked);
+  batches already spooled to disk stay there and `python -m kymo sync` can send them after the token is enabled again.
+
 ### Backup & restore (meta schema v3: `projects.last_backup_at`)
 
 * Format: `BACKUP-FORMAT.md` at the repo root (embedded into every archive as `README.txt` via `include_str!`).

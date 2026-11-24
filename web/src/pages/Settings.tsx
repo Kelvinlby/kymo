@@ -6,7 +6,7 @@ import { Page } from '../components/Shell';
 import { Ellipsis, FingerprintPattern, KeyRound, Lock, Monitor, Moon, Palette, Plus, Sun, Trash } from '../components/icons';
 import { confirmDialog, toast } from '../components/overlay';
 import { CodeTabs } from '../components/Snippets';
-import { Alert, Button, Card, CopyField, Dialog, EmptyState, ErrorBox, Field, IconButton, MenuItem, Popover, Skeleton, cx, useAsync, type TriggerProps } from '../components/ui';
+import { Alert, Badge, Button, Card, CopyField, Dialog, EmptyState, ErrorBox, Field, IconButton, MenuItem, Popover, Skeleton, Switch, cx, useAsync, type TriggerProps } from '../components/ui';
 import { absTime, relTime } from '../lib/format';
 import { defaultPasskeyName, registerPasskey } from '../lib/passkey';
 import { MOD } from '../lib/hotkeys';
@@ -87,7 +87,7 @@ function Tokens({ autoNew }: { autoNew: boolean }) {
     }
   }, [autoNew]);
   const revoke = async (id: number, n: string) => {
-    const ok = await confirmDialog({ title: `Revoke “${n}”?`, message: 'Scripts and clients using this token will immediately get 401 errors. This cannot be undone.', confirmLabel: 'Revoke token', danger: true });
+    const ok = await confirmDialog({ title: `Revoke “${n}”?`, message: 'Scripts and clients using this token will immediately get 401 errors. This cannot be undone — to pause a token instead, switch it off.', confirmLabel: 'Revoke token', danger: true });
     if (!ok) return;
     try {
       await api.deleteToken(id);
@@ -95,6 +95,25 @@ function Tokens({ autoNew }: { autoNew: boolean }) {
       q.reload();
     } catch (e) {
       toast.error(e, 'Could not revoke the token');
+    }
+  };
+  const [pending, setPending] = useState<Set<number>>(new Set());
+  const setEnabled = async (id: number, n: string, on: boolean) => {
+    setPending((p) => new Set(p).add(id));
+    try {
+      const t = await api.setTokenDisabled(id, !on);
+      if (q.data) q.setData(q.data.map((x) => (x.id === id ? { ...x, ...t } : x)));
+      toast(on ? 'Token enabled' : 'Token disabled', {
+        description: on ? `“${n}” works again.` : `Requests with “${n}” are refused until you switch it back on.`,
+      });
+    } catch (e) {
+      toast.error(e, on ? 'Could not enable the token' : 'Could not disable the token');
+    } finally {
+      setPending((p) => {
+        const s = new Set(p);
+        s.delete(id);
+        return s;
+      });
     }
   };
   return (
@@ -128,18 +147,20 @@ function Tokens({ autoNew }: { autoNew: boolean }) {
                   <th>Token</th>
                   <th>Created</th>
                   <th>Last used</th>
+                  <th>Enabled</th>
                   <th class="actions" />
                 </tr>
               </thead>
               <tbody>
                 {q.data.map((t) => (
-                  <tr key={t.id}>
+                  <tr key={t.id} class={cx(t.disabled && 'row-disabled')}>
                     <td>
                       <span class="row" style={{ gap: 10 }}>
                         <span class="row-icon">
                           <KeyRound size={14} />
                         </span>
                         <b class="cell-strong">{t.name}</b>
+                        {t.disabled && <Badge title="Requests with this token are refused until it is switched back on">Disabled</Badge>}
                       </span>
                     </td>
                     <td class="mono muted">{t.prefix}…</td>
@@ -148,6 +169,14 @@ function Tokens({ autoNew }: { autoNew: boolean }) {
                     </td>
                     <td class="muted" title={absTime(t.last_used_at)}>
                       {t.last_used_at ? relTime(t.last_used_at) : 'Never'}
+                    </td>
+                    <td>
+                      <Switch
+                        checked={!t.disabled}
+                        disabled={pending.has(t.id)}
+                        onChange={(on) => setEnabled(t.id, t.name, on)}
+                        ariaLabel={`${t.disabled ? 'Enable' : 'Disable'} token ${t.name}`}
+                      />
                     </td>
                     <td class="actions">
                       <RowMenu label={`Actions for ${t.name}`}>

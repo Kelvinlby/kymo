@@ -1392,3 +1392,8 @@ label.backup-row:hover {
 .backup-when .error {
   color: var(--danger);
 }
+
+/* API token switched off */
+.table tr.row-disabled td:not(:last-child):not(:nth-last-child(2)) {
+  opacity: 0.55;
+}

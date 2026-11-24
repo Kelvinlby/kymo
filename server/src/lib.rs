@@ -147,7 +147,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/admin/settings", get(admin::settings_get).put(admin::settings_put))
         // tokens
         .route("/tokens", get(t::list).post(t::create))
-        .route("/tokens/{id}", delete(t::delete))
+        .route("/tokens/{id}", patch(t::patch).delete(t::delete))
         // projects / experiments
         .route("/projects", get(p::list).post(p::create))
         .route("/projects/import", post(b::import).layer(DefaultBodyLimit::disable()))

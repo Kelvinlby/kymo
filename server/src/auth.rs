@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use webauthn_rs::prelude::{PasskeyAuthentication, PasskeyRegistration};
@@ -120,6 +120,9 @@ pub struct AuthState {
     users: DashMap<i64, UserInfo>,
     sessions: DashMap<[u8; 32], SessEntry>,
     tokens: DashMap<[u8; 32], Arc<TokEntry>>,
+    /// Bumped whenever a token is revoked (disabled/deleted). A cache-miss lookup only caches its result
+    /// if no revocation happened while it read the database, so a token disabled mid-lookup can't stick.
+    token_gen: AtomicU64,
     pub policy_all: AtomicBool,
     pub setup_token: Mutex<Option<String>>,
     pub setup_required: AtomicBool,
@@ -133,6 +136,7 @@ impl AuthState {
             users: DashMap::new(),
             sessions: DashMap::new(),
             tokens: DashMap::new(),
+            token_gen: AtomicU64::new(0),
             policy_all: AtomicBool::new(policy_all),
             setup_token: Mutex::new(None),
             setup_required: AtomicBool::new(setup_required),
@@ -158,6 +162,7 @@ impl AuthState {
     pub fn drop_user_creds(&self, id: i64) {
         self.users.remove(&id);
         self.sessions.retain(|_, s| s.user_id != id);
+        self.token_gen.fetch_add(1, Ordering::SeqCst);
         self.tokens.retain(|_, t| t.user_id != id);
     }
 
@@ -166,7 +171,9 @@ impl AuthState {
         self.challenges.lock().remove(hash);
     }
 
+    /// Revoke the cached entry of a token (after it was disabled or deleted in the database).
     pub fn drop_token(&self, hash: &[u8; 32]) {
+        self.token_gen.fetch_add(1, Ordering::SeqCst);
         self.tokens.remove(hash);
     }
 
@@ -382,14 +389,29 @@ impl AppState {
         let entry = match self.auth.tokens.get(&hash).map(|e| e.clone()) {
             Some(e) => e,
             None => {
+                let generation = self.auth.token_gen.load(Ordering::SeqCst);
                 let row = self.db.with(|c| {
-                    Ok(c.prepare_cached("SELECT id, user_id FROM api_tokens WHERE token_hash=?1")?
-                        .query_row([&hash[..]], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                    Ok(c.prepare_cached("SELECT id, user_id, disabled FROM api_tokens WHERE token_hash=?1")?
+                        .query_row([&hash[..]], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?)))
                         .optional()?)
                 })?;
-                let Some((id, user_id)) = row else { return Ok(None) };
+                let Some((id, user_id, disabled)) = row else { return Ok(None) };
+                if disabled {
+                    // never cached, so re-enabling takes effect on the next request
+                    return Err(ApiError::new(
+                        StatusCode::UNAUTHORIZED,
+                        "token_disabled",
+                        "this API token is disabled; its owner can re-enable it under Settings → API tokens",
+                    ));
+                }
                 let e = Arc::new(TokEntry { id, user_id, last_touch: AtomicI64::new(0) });
-                self.auth.tokens.insert(hash, e.clone());
+                if self.auth.token_gen.load(Ordering::SeqCst) == generation {
+                    self.auth.tokens.insert(hash, e.clone());
+                    // a revocation that raced with the insert above wins
+                    if self.auth.token_gen.load(Ordering::SeqCst) != generation {
+                        self.auth.tokens.remove(&hash);
+                    }
+                }
                 e
             }
         };

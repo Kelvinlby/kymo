@@ -95,6 +95,8 @@ export interface ApiToken {
   prefix: string;
   created_at: Timestamp;
   last_used_at: Timestamp | null;
+  /** switched off: requests with it get 401 token_disabled until it is enabled again */
+  disabled?: boolean;
 }
 export interface Passkey {
   id: number;
@@ -196,6 +198,7 @@ export const api = {
   tokens: () => get<ApiToken[]>('/tokens'),
   createToken: (name: string) => post<{ id: number; name: string; token: string; created_at: Timestamp }>('/tokens', { name }),
   deleteToken: (id: number) => del('/tokens/' + id),
+  setTokenDisabled: (id: number, disabled: boolean) => patch<ApiToken>('/tokens/' + id, { disabled }),
   // admin
   users: () => get<AdminUser[]>('/admin/users'),
   patchUser: (id: number, b: { disabled?: boolean; reset_passkeys?: boolean; display_name?: string }) => patch<AdminUser>('/admin/users/' + id, b),

@@ -44,7 +44,49 @@ pub async fn create(State(s): S, FullSession(p): FullSession, JsonBody(req): Jso
             Ok(c.last_insert_rowid())
         })
         .await?;
-    Ok(Json(json!({"id": id, "name": name, "token": token, "created_at": rfc3339(now)})))
+    Ok(Json(json!({"id": id, "name": name, "token": token, "created_at": rfc3339(now), "disabled": false})))
+}
+
+#[derive(Deserialize)]
+pub struct PatchReq {
+    disabled: Option<bool>,
+}
+
+/// `PATCH /tokens/{id} {"disabled": bool}` — switch a token off (it then gets `401 token_disabled`) or back on.
+pub async fn patch(
+    State(s): S,
+    FullSession(p): FullSession,
+    Path(id): Path<i64>,
+    JsonBody(req): JsonBody<PatchReq>,
+) -> ApiResult<Json<Value>> {
+    let uid = p.user.id;
+    let (hash, v) = s
+        .db
+        .call(move |c| {
+            if let Some(d) = req.disabled {
+                c.execute("UPDATE api_tokens SET disabled=?1 WHERE id=?2 AND user_id=?3", params![d, id, uid])?;
+            }
+            c.prepare_cached(
+                "SELECT token_hash, name, prefix, created_at, last_used_at, disabled FROM api_tokens WHERE id=?1 AND user_id=?2",
+            )?
+            .query_row(params![id, uid], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    json!({"id": id, "name": r.get::<_, String>(1)?, "prefix": r.get::<_, String>(2)?,
+                        "created_at": rfc3339(r.get(3)?), "last_used_at": opt_rfc3339(r.get(4)?),
+                        "disabled": r.get::<_, bool>(5)?}),
+                ))
+            })
+            .optional()?
+            .ok_or_else(|| ApiError::not_found("token"))
+        })
+        .await?;
+    if v["disabled"] == true {
+        if let Ok(h) = <[u8; 32]>::try_from(hash.as_slice()) {
+            s.auth.drop_token(&h);
+        }
+    }
+    Ok(Json(v))
 }
 
 pub async fn list(State(s): S, FullSession(p): FullSession) -> ApiResult<Json<Value>> {
@@ -53,12 +95,12 @@ pub async fn list(State(s): S, FullSession(p): FullSession) -> ApiResult<Json<Va
         .db
         .call(move |c| {
             let mut st = c.prepare_cached(
-                "SELECT id, name, prefix, created_at, last_used_at FROM api_tokens WHERE user_id=?1 ORDER BY id",
+                "SELECT id, name, prefix, created_at, last_used_at, disabled FROM api_tokens WHERE user_id=?1 ORDER BY id",
             )?;
             let rows = st.query_map([uid], |r| {
                 Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?,
                     "prefix": r.get::<_, String>(2)?, "created_at": rfc3339(r.get(3)?),
-                    "last_used_at": opt_rfc3339(r.get(4)?)}))
+                    "last_used_at": opt_rfc3339(r.get(4)?), "disabled": r.get::<_, bool>(5)?}))
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
