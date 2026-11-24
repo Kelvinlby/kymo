@@ -108,6 +108,20 @@ svg.lucide {
 }
 
 /* scrollbars */
+/* Reserve the scrollbar's space up front so content never shifts sideways when a scrollbar
+   appears or disappears (page grows, dialog locks page scroll, list fills up). */
+html,
+.sb-projects,
+.palette-list,
+.popover,
+.dialog-backdrop,
+.dialog-body,
+.fs-side,
+.runs-table-wrap,
+.cols-list,
+.share-list {
+  scrollbar-gutter: stable;
+}
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;

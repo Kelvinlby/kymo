@@ -655,7 +655,8 @@ function RunsPane(props: {
                     </td>
                   ))}
                   <td class="c-act">
-                    <div class="run-actions">
+                    {/* Stop clicks here from reaching the row, whose click toggles chart visibility. */}
+                    <div class="run-actions" onClick={(ev) => ev.stopPropagation()}>
                       <IconButton icon={pin ? PinOff : Pin} label={pin ? 'Unpin run' : 'Pin to top'} size="xs" onClick={() => props.togglePin(e.id)} />
                       <IconButton icon={sel ? EyeOff : Eye} label={sel ? 'Hide from charts' : 'Show in charts'} size="xs" onClick={() => toggleVis(e.id)} />
                       <Link href={'/e/' + e.id} class="btn btn-ghost btn-xs btn-icon" aria-label={`Open ${e.name}`} data-tip="Open experiment">
