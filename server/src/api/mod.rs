@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod auth;
+pub mod backup;
 pub mod ingest;
 pub mod projects;
 pub mod series;
@@ -100,6 +101,7 @@ pub struct ProjectRow {
     pub experiment_count: i64,
     pub running_count: i64,
     pub last_activity: Option<i64>,
+    pub last_backup_at: Option<i64>,
 }
 
 const PROJECT_BASE: &str = "p.id, p.owner_id, u.username, u.display_name, p.name, p.description, p.everyone, p.created_at,
@@ -114,7 +116,8 @@ pub fn project_select() -> &'static str {
                 (SELECT count(*) FROM project_members m WHERE m.project_id=p.id),
                 (SELECT count(*) FROM experiments e WHERE e.project_id=p.id),
                 (SELECT count(*) FROM experiments e WHERE e.project_id=p.id AND e.status='running'),
-                (SELECT max(updated_at) FROM experiments e WHERE e.project_id=p.id)
+                (SELECT max(updated_at) FROM experiments e WHERE e.project_id=p.id),
+                p.last_backup_at
              FROM projects p JOIN users u ON u.id=p.owner_id"
         )
     })
@@ -137,6 +140,7 @@ pub fn project_from_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
         experiment_count: opt(10)?,
         running_count: opt(11)?,
         last_activity: if 12 < n { r.get(12)? } else { None },
+        last_backup_at: if 13 < n { r.get(13)? } else { None },
     })
 }
 
@@ -210,6 +214,7 @@ pub fn project_json(p: &ProjectRow, role: Role) -> Value {
         "experiment_count": p.experiment_count,
         "running_count": p.running_count,
         "last_activity": rfc3339(p.last_activity.unwrap_or(p.created_at).max(p.created_at)),
+        "last_backup_at": p.last_backup_at.map(rfc3339),
     })
 }
 

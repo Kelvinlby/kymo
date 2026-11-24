@@ -150,7 +150,7 @@ the first one is canonical, e.g. `http://localhost:8080,http://localhost:5173` f
 
 ## 4. Read API (cookie session or bearer token)
 
-* `GET /api/v1/projects` → `[{id, name, description, everyone, member_count, role, owner: {id, username, display_name}, created_at, experiment_count, running_count, last_activity}]`
+* `GET /api/v1/projects` → `[{id, name, description, everyone, member_count, role, owner: {id, username, display_name}, created_at, experiment_count, running_count, last_activity, last_backup_at}]`
   (owned + shared with me; admin sees all)
 * `POST /api/v1/projects {name, description?}` · `PATCH /api/v1/projects/{id} {name?, description?}` · `DELETE /api/v1/projects/{id}`
 * `GET /api/v1/users` → `[{id, username, display_name}]` — the user directory (active users, for the share picker).
@@ -183,6 +183,21 @@ the first one is canonical, e.g. `http://localhost:8080,http://localhost:5173` f
   * NaN / ±Inf are encoded in JSON as `null` (value arrays may contain null); non-finite values are excluded from min/max/mean.
   * Must be fast: target < 5 ms server time for 20 series × 1M points each (see §6).
 * `GET /api/v1/series/raw?experiment_id=7&key=train/loss&format=csv|json` — full-resolution export (streamed).
+* Project objects also carry `last_backup_at` (RFC 3339 or `null`): when a backup of the project was last downloaded completely.
+
+### 4.1 Backup & restore (format: [BACKUP-FORMAT.md](BACKUP-FORMAT.md))
+
+* `GET /api/v1/projects/{id}/backup` — streams the project as one self-describing `.kymo.tar.gz` (gzip'd tar of a
+  README with the format spec, `manifest.json`, one `experiment.json` per experiment, metric points as CSV at full
+  precision). Anyone who can read the project, API tokens included (scripted backups). `Content-Type: application/gzip`,
+  `Content-Disposition` names the file `<project>-<YYYYMMDD-HHMMSS>.kymo.tar.gz` (UTC). A download that completes sets
+  the project's `last_backup_at`; an aborted one does not (the body then ends with an error, never a short "complete" file).
+* `POST /api/v1/projects/import[?name=<project name>]` — body: a backup file (`.tar.gz` or plain `.tar`, any
+  `Content-Type`, no size limit, streamed to disk). Full session only. Always creates a **new** project owned by the
+  caller (sharing is not restored; it is listed in the manifest for reference); a name the caller already uses gets
+  `-restored`, `-restored-2`, …. Archive file order does not matter. Any error rolls the import back completely.
+  → `{"project": <project object>, "experiments", "metrics", "points"}`; `400 invalid_backup` with a readable message
+  for anything that is not a valid backup.
 
 Errors everywhere: `{"error": "human readable", "code": "snake_case_code"}` with proper HTTP status.
 

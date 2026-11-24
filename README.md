@@ -48,6 +48,17 @@ curl -H "Authorization: Bearer $KYMO_API_KEY" -H "Content-Type: application/json
   -d '{"project":"p","experiment":"e","metrics":{"train":{"loss":1.2}}}' $KYMO_HOST/api/v1/ingest
 ```
 
+## Backup & restore
+
+**Projects → Backup** saves one `.kymo.tar.gz` per project (all projects are ticked by default; untick any you want to
+skip) and shows when each project was last backed up. **Restore** uploads backup files; each becomes a new project.
+The file is plain JSON + CSV inside a gzip'd tar, with its full format description as `README.txt` inside, so the data
+stays readable without Kymo: [BACKUP-FORMAT.md](BACKUP-FORMAT.md). Scripted backups work with an API token:
+
+```bash
+curl -fOJ -H "Authorization: Bearer $KYMO_API_KEY" $KYMO_HOST/api/v1/projects/<id>/backup
+```
+
 ## Tests
 
 ```bash

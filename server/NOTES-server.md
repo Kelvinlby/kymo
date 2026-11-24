@@ -114,6 +114,21 @@ or against a running server with `KYMO_HOST=... KYMO_API_KEY=kymo_... kymo-bench
 * Rate limits (fixed 60 s window, in memory): login 10 per IP+username, setup/signup/reset 10 per IP,
   invite lookups 60 per IP, password change 10 per user.
 
+### Backup & restore (meta schema v3: `projects.last_backup_at`)
+
+* Format: `BACKUP-FORMAT.md` at the repo root (embedded into every archive as `README.txt` via `include_str!`).
+  CSV values use ryu's shortest round-trip form, so export → import is bit-exact (`tests/backup.rs` checks every point).
+* Export (`api/backup.rs`) runs on a blocking thread: points are read straight from the shard SQLite file
+  (`Store::scan_points`, not via the series cache, so a backup doesn't evict what the UI is using), written as CSV parts
+  of ≤ 500k rows (the tar header needs each file's size, so one part is buffered), into tar → gzip level 1 (cheap on a
+  small VPS) → 256 KiB chunks over a bounded channel (backpressure = the client's download speed). `experiment.json`
+  follows its metric files and `manifest.json` comes last, since they carry exact counts. The response compression
+  layer skips `application/gzip`. `last_backup_at` is written only after the final chunk was handed to the body.
+* Import streams the upload to `$KYMO_DATA_DIR/tmp/import-*.part` (deleted afterwards), then reads it twice: pass 1
+  collects `manifest.json` + every `experiment.json` (so hand-repacked archives in any order work), validates them and
+  creates project/experiments/series; pass 2 streams the CSVs into the shard writers in 200k-row batches. On error the
+  half-imported project is deleted.
+
 ## Storage design
 
 * `meta.sqlite` (WAL): users, sessions, passkeys, invites, resets, tokens, settings, projects,

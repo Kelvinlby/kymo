@@ -307,6 +307,33 @@ impl Store {
         res
     }
 
+    /// Stream every committed point of a series in step order straight from SQLite (bypassing the
+    /// cache, so a full backup does not evict the series the UI is using). `f` returns false to stop.
+    /// NaN values come back as NaN. Blocking.
+    pub fn scan_points(&self, exp_id: i64, sid: i64, mut f: impl FnMut(i64, f64, f64) -> bool) -> ApiResult<()> {
+        let shard = self.shard_for(exp_id);
+        let conn = shard.readers.lock().pop();
+        let conn = match conn {
+            Some(c) => c,
+            None => open_shard_conn(&shard.path, true)?,
+        };
+        let res = (|| -> rusqlite::Result<()> {
+            let mut st = conn.prepare_cached("SELECT step, value, ts FROM points WHERE series_id=?1 ORDER BY step")?;
+            let mut rows = st.query([sid])?;
+            while let Some(r) = rows.next()? {
+                if !f(r.get(0)?, r.get::<_, Option<f64>>(1)?.unwrap_or(f64::NAN), r.get(2)?) {
+                    break;
+                }
+            }
+            Ok(())
+        })();
+        let mut p = shard.readers.lock();
+        if p.len() < 16 {
+            p.push(conn);
+        }
+        res.map_err(ApiError::from)
+    }
+
     /// Columnar data of a series, from the cache or loaded from SQLite. Blocking.
     pub fn column(&self, exp_id: i64, sid: i64) -> ApiResult<ColRef> {
         let shard = self.shard_for(exp_id);

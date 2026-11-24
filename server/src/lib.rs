@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use store::Store;
 use store::anyhow_like::{Error as StartError, Result as StartResult};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use webauthn_rs::prelude::{Url, Webauthn, WebauthnBuilder};
@@ -120,7 +121,7 @@ fn write_secret_file(path: &std::path::Path, content: &str) -> std::io::Result<(
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    use api::{admin, auth as a, ingest as ing, projects as p, series as s, tokens as t};
+    use api::{admin, auth as a, backup as b, ingest as ing, projects as p, series as s, tokens as t};
     let v1 = Router::new()
         // auth (public / session)
         .route("/auth/state", get(a::state))
@@ -149,6 +150,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/tokens/{id}", delete(t::delete))
         // projects / experiments
         .route("/projects", get(p::list).post(p::create))
+        .route("/projects/import", post(b::import).layer(DefaultBodyLimit::disable()))
+        .route("/projects/{id}/backup", get(b::export))
         .route("/projects/{id}", get(p::get_one).patch(p::patch).delete(p::delete))
         .route("/projects/{id}/experiments", get(p::experiments))
         .route("/projects/{id}/sharing", get(p::sharing_get).put(p::sharing_put))
@@ -169,7 +172,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api", api)
         .fallback_service(web::static_service(&state.cfg.web_dir))
-        .layer(CompressionLayer::new().quality(tower_http::CompressionLevel::Fastest))
+        .layer(
+            CompressionLayer::new()
+                .quality(tower_http::CompressionLevel::Fastest)
+                // backups are already gzip
+                .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("application/gzip"))),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

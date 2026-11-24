@@ -108,6 +108,18 @@ impl Client {
         (st, v)
     }
 
+    /// GET returning raw bytes + response headers (no decompression).
+    pub async fn get_bytes(&mut self, path: &str, extra: HeaderMap) -> (u16, Vec<u8>, HeaderMap) {
+        let r = self.http.get(format!("{}{}", self.base, path)).headers(self.headers()).headers(extra).send().await.unwrap();
+        let st = r.status().as_u16();
+        let h = r.headers().clone();
+        (st, r.bytes().await.unwrap().to_vec(), h)
+    }
+    /// POST a raw body (e.g. a file upload).
+    pub async fn post_bytes(&mut self, path: &str, body: Vec<u8>) -> (u16, Value) {
+        self.send(reqwest::Method::POST, path, Some(body), HeaderMap::new()).await
+    }
+
     pub async fn get(&mut self, path: &str) -> (u16, Value) {
         self.send(reqwest::Method::GET, path, None, HeaderMap::new()).await
     }

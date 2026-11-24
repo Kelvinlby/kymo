@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'preact/hooks';
 import type { Project } from '../api';
 import { useAuth } from '../auth';
 import { Page } from '../components/Shell';
-import { FolderKanban, Plus, Search } from '../components/icons';
+import { BackupDialog } from '../components/Backup';
+import { DatabaseBackup, FolderKanban, Plus, Search } from '../components/icons';
 import { ProjectCard, ProjectDialog } from '../components/project';
 import { Button, EmptyState, ErrorBox, SearchInput, Segmented, Skeleton } from '../components/ui';
 import { NoProjects } from './Overview';
@@ -18,6 +19,7 @@ export function Projects() {
   const [creating, setCreating] = useState(loc.query.get('new') === '1');
   const [q, setQ] = useState('');
   const [scope, setScope] = useState<Scope>('all');
+  const [backup, setBackup] = useState(false);
   useEffect(() => {
     if (loc.query.get('new') === '1') {
       setCreating(true);
@@ -39,9 +41,14 @@ export function Projects() {
     <Page
       crumbs={[{ label: 'Projects' }]}
       actions={
-        <Button variant="primary" size="sm" icon={Plus} onClick={() => setCreating(true)}>
-          New project
-        </Button>
+        <>
+          <Button size="sm" icon={DatabaseBackup} onClick={() => setBackup(true)}>
+            Backup
+          </Button>
+          <Button variant="primary" size="sm" icon={Plus} onClick={() => setCreating(true)}>
+            New project
+          </Button>
+        </>
       }
     >
       <div class="page-wrap">
@@ -91,6 +98,7 @@ export function Projects() {
           </div>
         )}
       </div>
+      {backup && <BackupDialog onClose={() => setBackup(false)} />}
       {creating && <ProjectDialog onClose={() => setCreating(false)} onSaved={(p: Project) => navigate('/p/' + p.id)} />}
     </Page>
   );

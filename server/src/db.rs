@@ -111,6 +111,10 @@ pub const META_MIGRATIONS: &[&str] = &[
     CREATE INDEX project_members_user ON project_members(user_id);
     CREATE INDEX experiments_project_status ON experiments(project_id, status);
     "#,
+    // v3: time of the last completed backup download (unix ms)
+    r#"
+    ALTER TABLE projects ADD COLUMN last_backup_at INTEGER;
+    "#,
 ];
 
 pub const SHARD_MIGRATIONS: &[&str] = &[

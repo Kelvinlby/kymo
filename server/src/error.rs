@@ -64,6 +64,12 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
+impl From<std::io::Error> for ApiError {
+    fn from(e: std::io::Error) -> Self {
+        ApiError::internal(e)
+    }
+}
+
 impl From<tokio::task::JoinError> for ApiError {
     fn from(e: tokio::task::JoinError) -> Self {
         ApiError::internal(e)

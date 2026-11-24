@@ -38,6 +38,8 @@ export interface Project {
   running_count?: number;
   /** legacy (pre-sharing servers) */
   shared?: boolean;
+  /** when a backup of this project was last downloaded completely (null = never) */
+  last_backup_at?: Timestamp | null;
 }
 export interface Sharing {
   everyone: ShareRole | null;
@@ -221,6 +223,7 @@ export const api = {
   deleteExperiment: (id: number) => del('/experiments/' + id),
   metrics: (id: number, signal?: AbortSignal) => get<MetricSummary[]>('/experiments/' + id + '/metrics', signal),
   query: (q: SeriesQuery, signal?: AbortSignal) => request<{ series: SeriesResult[] }>('POST', '/series/query', q, { signal }),
+  backupUrl: (projectId: number) => `/api/v1/projects/${projectId}/backup`,
   rawUrl: (experimentId: number, key: string, format: 'csv' | 'json' = 'csv') =>
     `/api/v1/series/raw?experiment_id=${experimentId}&key=${encodeURIComponent(key)}&format=${format}`,
 };

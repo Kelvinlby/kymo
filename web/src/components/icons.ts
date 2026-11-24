@@ -1,6 +1,7 @@
 // Central icon re-exports (lucide, tree-shaken).
 export {
   Activity,
+  ArchiveRestore,
   ArrowDown,
   ArrowRight,
   ArrowUp,
@@ -23,6 +24,7 @@ export {
   Command,
   Copy,
   CornerDownLeft,
+  DatabaseBackup,
   Download,
   Ellipsis,
   ExternalLink,
@@ -72,6 +74,7 @@ export {
   Tag,
   Terminal,
   Trash,
+  Upload,
   TriangleExclamationPoint,
   User,
   UserCheck,

@@ -31,6 +31,56 @@ pub fn rfc3339(ms: i64) -> String {
     )
 }
 
+/// Parse RFC 3339 (`YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)`, `T` may be a space) to unix ms.
+pub fn parse_rfc3339(s: &str) -> Option<i64> {
+    let b = s.trim().as_bytes();
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let t = b.get(r)?;
+        if t.is_empty() || !t.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(t).ok()?.parse().ok()
+    };
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (y, mo, d, h, mi, se) = (num(0..4)?, num(5..7)?, num(8..10)?, num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    let mut i = 19;
+    let mut ms = 0i64;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let st = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == st {
+            return None;
+        }
+        let frac = &b[st..i.min(st + 3)];
+        ms = std::str::from_utf8(frac).ok()?.parse::<i64>().ok()? * 10i64.pow(3 - frac.len() as u32);
+    }
+    let off = match b.get(i) {
+        Some(b'Z' | b'z') if i + 1 == b.len() => 0,
+        Some(&c @ (b'+' | b'-')) if i + 6 == b.len() && b[i + 3] == b':' => {
+            let o = num(i + 1..i + 3)? * 60 + num(i + 4..i + 6)?;
+            if c == b'+' { o } else { -o }
+        }
+        _ => return None,
+    };
+    // days_from_civil (Howard Hinnant)
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if mo > 2 { mo - 3 } else { mo + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(((days * 86400 + h * 3600 + mi * 60 + se) - off * 60) * 1000 + ms)
+}
+
 pub fn opt_rfc3339(ms: Option<i64>) -> Option<String> {
     ms.map(rfc3339)
 }
@@ -151,6 +201,16 @@ pub fn valid_status(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rfc3339_roundtrip() {
+        for ms in [0i64, 1_795_497_600_123, 951_782_400_000, -86_400_000, 4_102_444_799_999] {
+            assert_eq!(parse_rfc3339(&rfc3339(ms)), Some(ms), "{}", rfc3339(ms));
+        }
+        assert_eq!(parse_rfc3339("2026-11-24T10:30:00+01:30"), parse_rfc3339("2026-11-24T09:00:00Z"));
+        assert_eq!(parse_rfc3339("2026-11-24 09:00:00.5Z"), parse_rfc3339("2026-11-24T09:00:00.500Z"));
+        assert_eq!(parse_rfc3339("2026-13-01T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339("yesterday"), None);
+    }
     #[test]
     fn natural() {
         let mut v = vec!["layer10", "layer2", "a/b", "layer1", "eval/acc", "layer02", "train/loss"];

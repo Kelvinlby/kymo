@@ -1273,3 +1273,122 @@
   text-align: center;
   font-size: var(--fs-sm);
 }
+
+/* ============================================================ backup & restore dialog */
+.backup-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.backup-intro {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.backup-empty {
+  padding: var(--s-6) 0;
+  text-align: center;
+}
+.backup-list {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  max-height: min(52vh, 460px);
+  overflow: auto;
+}
+.backup-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 9px var(--s-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+label.backup-row {
+  cursor: pointer;
+}
+label.backup-row:hover {
+  background: var(--surface-2);
+}
+.backup-row:last-child {
+  border-bottom: 0;
+}
+.backup-row.off .backup-main {
+  opacity: 0.55;
+}
+.backup-all {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+.backup-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.backup-name,
+.backup-when {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backup-when {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+}
+.backup-prog {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.backup-prog.ok {
+  color: var(--finished);
+}
+.backup-prog.err {
+  color: var(--danger, #d33);
+}
+.backup-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+}
+.drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: var(--s-6) var(--s-4);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast),
+    background var(--t-fast);
+}
+.drop-zone:hover,
+.drop-zone.over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.drop-zone.busy {
+  cursor: progress;
+  opacity: 0.7;
+}
+.drop-zone:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.backup-when .error {
+  color: var(--danger);
+}

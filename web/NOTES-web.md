@@ -94,6 +94,15 @@ experiment list is polled at the same interval while any experiment is running; 
 Per-browser state in localStorage: selection, colours, sort, config columns, filter, collapsed groups, plot settings,
 sidebar width.
 
+## Backup & restore
+
+`components/Backup.tsx`, opened from **Projects → Backup**. Back up: every readable project, all ticked by default,
+each with its last backup time (`last_backup_at`, shown with `toLocaleString`, i.e. the browser's timezone). Where the
+File System Access API exists (Chromium) the user picks a folder once and each backup is streamed there via `fetch`
+with per-file progress; elsewhere each file is a plain browser download (`<a download>`, streamed to disk by the
+browser) and the dialog polls the project list for two minutes so the new backup times show up. Restore: file picker
+or drag & drop, several files at once, uploaded one by one with `XMLHttpRequest` (upload progress), result per file.
+
 ## Assumptions about the server beyond SPEC.md
 
 - Timestamps (`created_at`, `updated_at`, `last_activity`, `expires_at`, …) may be RFC3339 strings or unix seconds;
