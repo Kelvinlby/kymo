@@ -1,6 +1,6 @@
 # kymo — Python SDK
 
-You hand kymo a dict of numbers and it gets them to a [Kymo](../../SPEC.md) server, without slowing down or crashing the loop that produced them.
+You hand kymo a dict of numbers and it gets them to a [Kymo](https://github.com/Kelvinlby/kymo/blob/main/SPEC.md) server, without slowing down or crashing the loop that produced them.
 
 * `run.log()` costs well under a microsecond: it shallow-copies your dict and appends it to a deque. Nothing else happens on your thread.
 * Flattening, value conversion, JSON, gzip, HTTP, retries and the disk spool all run on background daemon threads.

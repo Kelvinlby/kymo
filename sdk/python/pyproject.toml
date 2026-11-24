@@ -8,12 +8,19 @@ version = "0.1.0"
 description = "Non-blocking Python logging SDK for the Kymo ML experiment tracker"
 readme = "README.md"
 requires-python = ">=3.9"
+authors = [{ name = "Kelvin" }]
+keywords = ["machine-learning", "experiment-tracking", "logging", "metrics"]
 dependencies = []
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
+
+[project.urls]
+Repository = "https://github.com/Kelvinlby/kymo"
+Issues = "https://github.com/Kelvinlby/kymo/issues"
+Documentation = "https://github.com/Kelvinlby/kymo/tree/main/sdk/python"
 
 [project.scripts]
 kymo = "kymo.__main__:main"
