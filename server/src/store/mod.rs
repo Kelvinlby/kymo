@@ -207,7 +207,7 @@ impl Store {
     pub fn create_series(&self, exp_id: i64, keys: &[&str]) -> ApiResult<()> {
         let ek = self.exp_keys(exp_id)?;
         let created = self.db.with(|c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut out = Vec::with_capacity(keys.len());
             {
                 let mut ins = tx.prepare_cached(

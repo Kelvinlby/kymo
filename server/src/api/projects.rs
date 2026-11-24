@@ -131,7 +131,7 @@ pub async fn patch(
     let v = s
         .db
         .call(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let (pr, _) = managed_project(&tx, &p, id)?;
             if let Some(n) = &req.name {
                 if *n != pr.name {
@@ -295,7 +295,7 @@ pub async fn experiment_patch(
     let v = s
         .db
         .call(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let (pr, _) = experiment_project(&tx, &p, id, true)?;
             if let Some(n) = &req.name {
                 let taken: bool = tx.query_row(
@@ -455,7 +455,7 @@ pub async fn sharing_put(
     let v = s
         .db
         .call(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let (pr, _) = managed_project(&tx, &p, id)?;
             for m in &req.members {
                 if m.user_id == pr.owner_id {

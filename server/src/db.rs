@@ -141,7 +141,7 @@ pub const SHARD_MIGRATIONS: &[&str] = &[
 pub fn migrate(conn: &mut Connection, migrations: &[&str]) -> rusqlite::Result<()> {
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (i, sql) in migrations.iter().enumerate().skip(v as usize) {
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", (i + 1) as i64)?;
         tx.commit()?;

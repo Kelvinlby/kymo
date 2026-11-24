@@ -106,7 +106,7 @@ fn prepare(s: &AppState, principal: &Principal, headers: &HeaderMap, body: Bytes
         cached.unwrap()
     } else {
         let id = s.db.with(|c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let id = match cached {
                 Some(id) => id,
                 None => {

@@ -62,7 +62,7 @@ pub async fn user_patch(
     }
     s.db
         .call(move |c| {
-            let tx = c.transaction()?;
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE id=?1)", [id], |r| r.get(0))?;
             if !exists {
                 return Err(ApiError::not_found("user"));
