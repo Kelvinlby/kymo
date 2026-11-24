@@ -497,8 +497,10 @@ function FullscreenChart(
         </div>
         {st?.ui && <StatsRangeLine ui={st.ui} xMode={props.settings.xMode} approx={!!st.s?.ds.some(Boolean)} onClear={() => ctrlRef.current?.setStatsRange(null)} />}
         {!st?.s && <div class="fs-stat faint">Computing…</div>}
+        {st?.s && !st.s.stats.some((s) => s?.count > 0) && <div class="fs-stat faint">No data points{st.ui.statsRange ? ' in this range' : ''}.</div>}
         {st?.s?.runs.map((run, i) => {
           const s = st.s!.stats[i];
+          if (!(s?.count > 0)) return null;
           const cells: [string, string][] = [
             ['last', fmtNum(s.last)],
             ['min', fmtNum(s.min)],
