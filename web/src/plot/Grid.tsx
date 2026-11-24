@@ -463,7 +463,7 @@ function FullscreenChart(
           </span>
         ) : (
           <>
-            {g ? <span class="mono">{g}</span> : 'General'} · {runsLabel} · drag or scroll to zoom (Alt for y), shift-scroll to pan, shift-drag to select a range
+            {g ? <span class="mono">{g}</span> : 'General'} · {runsLabel} · scroll or drag to zoom, scroll on an axis to zoom it, right-drag or shift-scroll to pan, shift-drag to select a range
           </>
         )
       }

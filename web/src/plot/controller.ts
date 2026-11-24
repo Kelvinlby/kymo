@@ -138,8 +138,15 @@ export class PanelController {
   private overview: { x: Float64Array; step: Float64Array }[] = [];
   private fullX: [number, number] | null = null;
   private wheelTimer: ReturnType<typeof setTimeout> | null = null;
-  /** fullscreen: a plain vertical wheel zooms x (in the grid it scrolls the page) */
-  wheelZoom = false;
+  /** wheel animation: the drawn window eases from show* toward goal* (zoomX/zoomY already hold the goal) */
+  private showX: [number, number] | null = null;
+  private goalX: [number, number] | null = null;
+  private showY: [number, number] | null = null;
+  private goalY: [number, number] | null = null;
+  private animRaf = 0;
+  private animT = 0;
+  /** right-button drag pan in progress */
+  private panning = false;
   private statsRange: [number, number] | null = null;
   private data = new Map<string, SeriesData>(); // by sid(experiment, key)
   private prepared: Prepared[] = [];
@@ -258,6 +265,7 @@ export class PanelController {
   destroy() {
     this.destroyed = true;
     if (this.wheelTimer) clearTimeout(this.wheelTimer);
+    this.stopAnim(false);
     this.unsub?.();
     this.destroyPlot();
   }
@@ -409,6 +417,8 @@ export class PanelController {
     this.statsBand.style.display = 'none';
     this.u.over.appendChild(this.statsBand);
     this.u.root.addEventListener('wheel', this.onWheel, { passive: false });
+    this.u.over.addEventListener('mousedown', this.onPanStart);
+    this.u.over.addEventListener('contextmenu', (e) => e.preventDefault());
     this.u.over.addEventListener('mouseenter', () => (this.hovered = true));
     this.u.over.addEventListener('mouseleave', () => {
       this.hovered = false;
@@ -435,6 +445,7 @@ export class PanelController {
 
   private destroyPlot() {
     this.cancelMove();
+    this.stopAnim(false);
     this.tipHtml = '';
     if (this.u) {
       if (this.hovered) tooltipEl().style.display = 'none';
@@ -557,17 +568,21 @@ export class PanelController {
             self.cancelMove();
             return handler(e);
           },
+          // left button only: the right button pans (onPanStart)
           mouseup: (_u, _t, handler) => (e: MouseEvent) => {
+            if (e.button !== 0) return null;
             self.flushMoveNow();
             return handler(e);
           },
           mousedown: (_u, _t, handler) => (e: MouseEvent) => {
+            if (e.button !== 0) return null;
             self.flushMoveNow();
             self.shiftDrag = e.shiftKey;
             self.host.parentElement?.classList.toggle('shift', e.shiftKey);
             return handler(e);
           },
           dblclick: () => (e: MouseEvent) => {
+            if (e.button !== 0) return null;
             e.preventDefault();
             self.resetZoom();
             return null;
@@ -585,6 +600,7 @@ export class PanelController {
 
   // ------------------------------------------------------------------ scales
   private xRange(mn: number | null, mx: number | null): uPlot.Range.MinMax {
+    if (this.showX) return [this.showX[0], this.showX[1]];
     if (this.zoomX) return [this.zoomX[0], this.zoomX[1]];
     if (mn == null || mx == null) return [0, 1];
     if (mn === mx) return [mn - 1, mx + 1];
@@ -592,6 +608,7 @@ export class PanelController {
   }
 
   private yRange(mn: number | null, mx: number | null): uPlot.Range.MinMax {
+    if (this.showY) return [this.showY[0], this.showY[1]];
     if (this.zoomY) return [this.zoomY[0], this.zoomY[1]];
     const r = this.autoYRange(mn, mx);
     this.autoY = [r[0]!, r[1]!];
@@ -633,6 +650,7 @@ export class PanelController {
   /** Zoom to an x range: rescale instantly, then refetch the window at full resolution. */
   zoomTo(x0: number, x1: number) {
     if (!(x1 > x0)) return;
+    this.stopAnim(false);
     this.zoomX = [x0, x1];
     this.zoomSteps = this.xToSteps(x0, x1);
     this.setUi({ zoomed: true });
@@ -645,6 +663,7 @@ export class PanelController {
     const hadY = this.zoomY;
     if (this.wheelTimer) clearTimeout(this.wheelTimer);
     this.wheelTimer = null;
+    this.stopAnim(false);
     this.zoomX = null;
     this.zoomSteps = null;
     this.zoomY = null;
@@ -656,18 +675,18 @@ export class PanelController {
     } else if (hadY && this.u) this.u.setData(this.u.data, true);
   }
 
-  // ------------------------------------------------------------------ wheel pan / zoom
+  // ------------------------------------------------------------------ wheel / drag pan & zoom
   /**
-   * Over the plot:   ctrl/⌘ + wheel (or pinch) zooms x · shift + wheel (or a sideways swipe) pans x
-   *                  alt + wheel zooms y · alt + shift + wheel pans y
-   * Over an axis:    wheel zooms that axis · shift + wheel pans it
-   * Fullscreen:      a plain wheel over the plot zooms x too (in the grid it scrolls the page).
-   * Zooms are anchored at the mouse. Rescaling is instant; the x window is refetched at full
-   * resolution once the wheel settles.
+   * Over the plot:   wheel zooms x at the mouse (alt + wheel zooms y)
+   *                  shift + wheel or a sideways wheel/swipe pans x and keeps y where it is
+   *                  right-button drag pans both axes
+   * Over an axis:    wheel zooms that axis · shift / sideways pans it
+   * Wheel steps ease in over a few frames (so a step close to the grid spacing does not read as
+   * moving backwards); the x window is refetched at full resolution once the wheel settles.
    */
   private onWheel = (e: WheelEvent) => {
     const u = this.u;
-    if (!u) return;
+    if (!u || this.panning) return;
     const r = u.over.getBoundingClientRect();
     const px = e.clientX - r.left;
     const py = e.clientY - r.top;
@@ -683,38 +702,68 @@ export class PanelController {
     const sideways = Math.abs(dx) > Math.abs(dy);
     const d = sideways ? dx : dy;
     if (!d) return;
+    e.preventDefault();
     const pan = e.shiftKey || sideways;
-    let act: 'zx' | 'px' | 'zy' | 'py' | null = null;
+    let act: 'zx' | 'px' | 'zy' | 'py';
     if (onXAxis) act = pan ? 'px' : 'zx';
     else if (onYAxis) act = pan ? 'py' : 'zy';
     else if (e.altKey) act = pan ? 'py' : 'zy';
-    else if (e.ctrlKey || e.metaKey) act = 'zx';
-    else if (pan) act = 'px';
-    else if (this.wheelZoom) act = 'zx';
-    if (!act) return; // let the page scroll
-    e.preventDefault();
+    else act = pan ? 'px' : 'zx';
     // trackpad pinch arrives as ctrl+wheel with small fractional deltas: give it a steeper curve
     const pinch = e.ctrlKey && e.deltaMode === 0 && !Number.isInteger(e.deltaY);
     const zf = Math.exp(Math.max(-300, Math.min(300, d)) * (pinch ? 0.01 : 0.002));
     if (act === 'zx') this.wheelX(px, zf, 0, r.width);
-    else if (act === 'px') this.wheelX(px, 1, d, r.width);
-    else if (act === 'zy') this.wheelY(py, zf, 0, r.height);
+    else if (act === 'px') {
+      this.pinY();
+      this.wheelX(px, 1, Math.max(-r.width / 3, Math.min(r.width / 3, d)), r.width);
+    } else if (act === 'zy') this.wheelY(py, zf, 0, r.height);
     else this.wheelY(py, 1, -d, r.height);
   };
 
+  /** Freeze the y axis at what is drawn now (horizontal panning must not re-fit y). */
+  private pinY() {
+    const u = this.u;
+    if (!u || this.zoomY) return;
+    const lo = u.scales.y.min;
+    const hi = u.scales.y.max;
+    if (lo == null || hi == null || !(hi > lo)) return;
+    this.zoomY = [lo, hi];
+    this.setUi({ zoomed: true });
+  }
+
+  /** x window currently aimed at: the animation goal, the zoom window, or what is drawn */
+  private targetX(): [number, number] | null {
+    if (this.goalX) return this.goalX;
+    if (this.zoomX) return this.zoomX;
+    const u = this.u;
+    const a = u?.scales.x.min;
+    const b = u?.scales.x.max;
+    return a != null && b != null && b > a ? [a, b] : null;
+  }
+
+  private targetY(): [number, number] | null {
+    if (this.goalY) return this.goalY;
+    if (this.zoomY) return this.zoomY;
+    const u = this.u;
+    const a = u?.scales.y.min;
+    const b = u?.scales.y.max;
+    return a != null && b != null && b > a ? [a, b] : null;
+  }
+
   /** Zoom x by `f` around pixel `at`, then shift by `shiftPx` (of a `w`-pixel plot). */
   private wheelX(at: number, f: number, shiftPx: number, w: number) {
-    const u = this.u!;
-    // own state first: uPlot commits setScale in a microtask, so u.scales lags within a burst
-    let a = this.zoomX ? this.zoomX[0] : u.scales.x.min;
-    let b = this.zoomX ? this.zoomX[1] : u.scales.x.max;
-    if (a == null || b == null || !(b > a)) return;
+    const t = this.targetX();
+    if (!t) return;
+    let [a, b] = t;
     const c = a + ((b - a) * Math.max(0, Math.min(w, at))) / w;
     a = c - (c - a) * f;
     b = c + (b - c) * f;
     const sh = ((b - a) * shiftPx) / w;
-    a += sh;
-    b += sh;
+    this.setXWindow(a + sh, b + sh, f, true);
+  }
+
+  /** Clamp [a, b] to the data extent and make it the x window (animated or immediate). */
+  private setXWindow(a: number, b: number, f: number, animate: boolean) {
     // bounds: the full extent seen unzoomed, grown by whatever newer data has arrived since
     let full = this.fullX;
     const cur = extentOf(this.prepared.map((p) => p.x));
@@ -722,7 +771,12 @@ export class PanelController {
     else full = full ?? cur;
     if (full && full[1] > full[0]) {
       if (b - a >= full[1] - full[0]) {
-        if (this.zoomX) this.clearXZoom(full);
+        if (this.zoomX) {
+          this.zoomX = null;
+          this.setUi({ zoomed: !!this.zoomY });
+          this.moveX(full, animate);
+          this.scheduleWindowFetch();
+        }
         return;
       }
       if (a < full[0]) [a, b] = [full[0], b + full[0] - a];
@@ -736,15 +790,26 @@ export class PanelController {
     }
     this.zoomX = [a, b];
     this.setUi({ zoomed: true });
-    u.setScale('x', { min: a, max: b });
+    this.moveX([a, b], animate);
     this.scheduleWindowFetch();
   }
 
-  private clearXZoom(full: [number, number]) {
-    this.zoomX = null;
-    this.setUi({ zoomed: !!this.zoomY });
-    this.u?.setScale('x', { min: full[0], max: full[1] });
-    this.scheduleWindowFetch();
+  private moveX(to: [number, number], animate: boolean) {
+    const u = this.u;
+    if (!u) return;
+    if (animate) {
+      if (!this.showX) {
+        const a = u.scales.x.min;
+        const b = u.scales.x.max;
+        if (a == null || b == null) return void u.setScale('x', { min: to[0], max: to[1] });
+        this.showX = [a, b];
+      }
+      this.goalX = to;
+      this.startAnim();
+    } else {
+      this.showX = this.goalX = null;
+      u.setScale('x', { min: to[0], max: to[1] });
+    }
   }
 
   /** Refetch the visible x window (or the unzoomed overview) once the wheel has been still a moment. */
@@ -760,10 +825,9 @@ export class PanelController {
 
   /** Zoom y by `f` around pixel `at` and shift by `shiftPx` (of an `h`-pixel plot); log axes zoom in log space. */
   private wheelY(at: number, f: number, shiftPx: number, h: number) {
-    const u = this.u!;
-    const lo = this.zoomY ? this.zoomY[0] : u.scales.y.min;
-    const hi = this.zoomY ? this.zoomY[1] : u.scales.y.max;
-    if (lo == null || hi == null || !(hi > lo)) return;
+    const t = this.targetY();
+    if (!t) return;
+    const [lo, hi] = t;
     const log = this.logY;
     if (log && !(lo > 0)) return;
     const T = log ? Math.log10 : (v: number) => v;
@@ -780,21 +844,158 @@ export class PanelController {
       if (this.zoomY) this.clearYZoom();
       return;
     }
+    this.setYWindow(iT(a), iT(b), true);
+  }
+
+  private setYWindow(lo: number, hi: number, animate: boolean) {
+    const u = this.u;
+    if (!u || !Number.isFinite(lo) || !Number.isFinite(hi)) return;
+    const log = this.logY;
+    const a = log ? Math.log10(lo) : lo;
+    const b = log ? Math.log10(hi) : hi;
     const scale = Math.max(Math.abs(a), Math.abs(b), 1e-300);
     if (!(b - a > scale * 1e-9) || !Number.isFinite(a) || !Number.isFinite(b)) return;
-    this.zoomY = [iT(a), iT(b)];
+    this.zoomY = [lo, hi];
     this.setUi({ zoomed: true });
-    u.setScale('y', { min: this.zoomY[0], max: this.zoomY[1] });
+    if (animate) {
+      if (!this.showY) {
+        const s0 = u.scales.y.min;
+        const s1 = u.scales.y.max;
+        if (s0 == null || s1 == null) return void u.setScale('y', { min: lo, max: hi });
+        this.showY = [s0, s1];
+      }
+      this.goalY = [lo, hi];
+      this.startAnim();
+    } else {
+      this.showY = this.goalY = null;
+      u.setScale('y', { min: lo, max: hi });
+    }
   }
+
+  // ------------------------------------------------------------------ animation
+  private startAnim() {
+    if (this.animRaf) return;
+    this.animT = performance.now();
+    this.animRaf = requestAnimationFrame(this.animStep);
+  }
+
+  /** Stop easing; `snap` jumps to the goal, otherwise the goal is simply dropped. */
+  private stopAnim(snap: boolean) {
+    if (this.animRaf) cancelAnimationFrame(this.animRaf);
+    this.animRaf = 0;
+    const gx = this.goalX;
+    const gy = this.goalY;
+    this.showX = this.goalX = this.showY = this.goalY = null;
+    const u = this.u;
+    if (snap && u) {
+      u.batch(() => {
+        if (gx) u.setScale('x', { min: gx[0], max: gx[1] });
+        if (gy) u.setScale('y', { min: gy[0], max: gy[1] });
+      });
+    }
+  }
+
+  private animStep = (t: number) => {
+    this.animRaf = 0;
+    const u = this.u;
+    if (!u) return this.stopAnim(false);
+    const dt = Math.max(0, Math.min(50, t - this.animT));
+    this.animT = t;
+    // exponential ease-out, time constant ~45 ms: a wheel notch settles in ~150 ms
+    const k = 1 - Math.exp(-dt / 45);
+    let more = false;
+    let nx: [number, number] | null = null;
+    let ny: [number, number] | null = null;
+    if (this.showX && this.goalX) {
+      const s = approach(this.showX, this.goalX, k, false);
+      nx = s ?? this.goalX;
+      if (s) more = true;
+      this.showX = s;
+      if (!s) this.goalX = null;
+    }
+    if (this.showY && this.goalY) {
+      const s = approach(this.showY, this.goalY, k, this.logY);
+      ny = s ?? this.goalY;
+      if (s) more = true;
+      this.showY = s;
+      if (!s) this.goalY = null;
+    }
+    u.batch(() => {
+      if (nx) u.setScale('x', { min: nx[0], max: nx[1] });
+      if (ny) u.setScale('y', { min: ny[0], max: ny[1] });
+    });
+    if (more) this.animRaf = requestAnimationFrame(this.animStep);
+  };
+
+  // ------------------------------------------------------------------ right-drag pan
+  private onPanStart = (e: MouseEvent) => {
+    const u = this.u;
+    if (e.button !== 2 || !u) return;
+    e.preventDefault();
+    this.stopAnim(true);
+    const x0 = this.zoomX ?? this.targetX();
+    const y0 = this.targetY();
+    if (!x0 || !y0) return;
+    const log = this.logY;
+    if (log && !(y0[0] > 0)) return;
+    const T = log ? Math.log10 : (v: number) => v;
+    const iT = log ? (v: number) => 10 ** v : (v: number) => v;
+    const ty0 = T(y0[0]);
+    const ty1 = T(y0[1]);
+    const r = u.over.getBoundingClientRect();
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const cls = this.host.parentElement?.classList;
+    let last: MouseEvent | null = null;
+    let raf = 0;
+    let moved = false;
+    this.panning = true;
+    const apply = () => {
+      raf = 0;
+      const ev = last;
+      if (!ev || !this.u) return;
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      if (!moved) {
+        if (Math.abs(dx) + Math.abs(dy) < 3) return;
+        moved = true;
+        cls?.add('panning');
+        tooltipEl().style.display = 'none';
+      }
+      this.u.batch(() => {
+        const shx = ((x0[1] - x0[0]) * dx) / r.width;
+        this.setXWindow(x0[0] - shx, x0[1] - shx, 1, false);
+        const shy = ((ty1 - ty0) * dy) / r.height;
+        this.setYWindow(iT(ty0 + shy), iT(ty1 + shy), false);
+      });
+    };
+    const move = (ev: MouseEvent) => {
+      last = ev;
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    const up = (ev: MouseEvent) => {
+      if (ev.button !== 2) return;
+      if (raf) cancelAnimationFrame(raf);
+      apply();
+      this.panning = false;
+      cls?.remove('panning');
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', up, true);
+    };
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
+  };
 
   private clearYZoom() {
     this.zoomY = null;
+    this.showY = this.goalY = null;
     this.setUi({ zoomed: !!this.zoomX });
     if (this.u) this.u.setData(this.u.data, true);
   }
 
   /** y window is in the old axis units after a log/normalize switch; the chart is recreated right after */
   private clearYZoomState() {
+    this.showY = this.goalY = null;
     if (!this.zoomY) return;
     this.zoomY = null;
     this.setUi({ zoomed: !!this.zoomX });
@@ -1008,6 +1209,19 @@ function normalized(main: Float64Array, y: Float64Array, mn: Float64Array | null
   };
   const m = f(main);
   return { main: m, y: y === main ? m : f(y), min: mn && f(mn), max: mx && f(mx) };
+}
+
+/** One easing step from `cur` toward `goal` (in log space for log axes); null once close enough to snap. */
+function approach(cur: [number, number], goal: [number, number], k: number, log: boolean): [number, number] | null {
+  const T = log ? Math.log10 : (v: number) => v;
+  const iT = log ? (v: number) => 10 ** v : (v: number) => v;
+  const c0 = T(cur[0]);
+  const c1 = T(cur[1]);
+  const g0 = T(goal[0]);
+  const g1 = T(goal[1]);
+  const eps = Math.abs(g1 - g0) * 1e-3;
+  if (!(Math.abs(g0 - c0) > eps || Math.abs(g1 - c1) > eps)) return null;
+  return [iT(c0 + (g0 - c0) * k), iT(c1 + (g1 - c1) * k)];
 }
 
 function positiveOnly(a: Float64Array): Float64Array {

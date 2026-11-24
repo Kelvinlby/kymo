@@ -558,6 +558,9 @@
 .u-over {
   cursor: crosshair;
 }
+.panel.panning .u-over {
+  cursor: grabbing;
+}
 .u-cursor-x,
 .u-cursor-y {
   border-color: var(--plot-cursor) !important;
