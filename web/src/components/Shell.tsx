@@ -10,9 +10,9 @@ import { MOD, useHotkeys } from '../lib/hotkeys';
 import { cycleTheme, setThemePref, useTheme } from '../lib/theme';
 import { Link, navigate, useLocation } from '../router';
 import { CommandPalette } from './CommandPalette';
-import { ChevronRight, ChevronsUpDown, FolderKanban, Keyboard, LayoutDashboard, LogOut, Monitor, Moon, PanelLeft, Plus, Search, Settings, Shield, Sun } from './icons';
+import { ChevronRight, ChevronsUpDown, FolderKanban, Keyboard, LayoutDashboard, LogOut, Monitor, Moon, PanelLeft, Plus, Search, Settings, Shield, Sun, User } from './icons';
 import { ShortcutsHelp } from './ShortcutsHelp';
-import { Avatar, EmptyState, IconButton, MenuItem, MenuSep, Popover, Segmented, Skeleton, cx } from './ui';
+import { EmptyState, IconButton, MenuItem, MenuSep, Popover, Segmented, Skeleton, cx } from './ui';
 
 export function Logo({ size = 22 }: { size?: number }) {
   return (
@@ -204,7 +204,7 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
         width={248}
         trigger={(p) => (
           <button ref={p.ref as any} class="sb-user-btn" onClick={p.toggle} aria-expanded={p['aria-expanded']} aria-haspopup="menu" aria-label="Account menu">
-            <Avatar name={name} size={28} />
+            <User size={16} class="sb-user-ico" aria-hidden="true" />
             <span class="sb-user-text">
               <span class="sb-user-name">{name}</span>
               <span class="sb-user-sub">
@@ -219,7 +219,6 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
         {(close) => (
           <>
             <div class="menu-user">
-              <Avatar name={name} size={32} />
               <div>
                 <div class="menu-user-name">{name}</div>
                 <div class="menu-user-sub">@{u.username}</div>

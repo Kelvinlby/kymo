@@ -6,7 +6,7 @@ import { Page } from '../components/Shell';
 import { Ellipsis, FingerprintPattern, KeyRound, Lock, Monitor, Moon, Palette, Plus, Sun, Trash } from '../components/icons';
 import { confirmDialog, toast } from '../components/overlay';
 import { CodeTabs } from '../components/Snippets';
-import { Alert, Avatar, Button, Card, CopyField, Dialog, EmptyState, ErrorBox, Field, IconButton, MenuItem, Popover, Skeleton, cx, useAsync, type TriggerProps } from '../components/ui';
+import { Alert, Button, Card, CopyField, Dialog, EmptyState, ErrorBox, Field, IconButton, MenuItem, Popover, Skeleton, cx, useAsync, type TriggerProps } from '../components/ui';
 import { absTime, relTime } from '../lib/format';
 import { defaultPasskeyName, registerPasskey } from '../lib/passkey';
 import { MOD } from '../lib/hotkeys';
@@ -53,15 +53,12 @@ export function Settings() {
     <Page crumbs={[{ label: 'Settings' }]}>
       <div class="page-wrap narrow">
         <div class="page-title-row">
-          <div class="row grow" style={{ gap: 14 }}>
-            <Avatar name={u.display_name || u.username} size={44} />
-            <div>
-              <h1>Settings</h1>
-              <p class="page-sub" style={{ marginTop: 0 }}>
-                {u.display_name || u.username} · @{u.username}
-                {u.is_admin ? ' · administrator' : ''}
-              </p>
-            </div>
+          <div class="grow">
+            <h1>Settings</h1>
+            <p class="page-sub" style={{ marginTop: 0 }}>
+              {u.display_name || u.username} · @{u.username}
+              {u.is_admin ? ' · administrator' : ''}
+            </p>
           </div>
         </div>
         <div class="subnav-layout">

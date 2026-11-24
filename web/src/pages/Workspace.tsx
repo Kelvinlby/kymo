@@ -235,7 +235,7 @@ export function Workspace({ projectId }: { projectId: number }) {
       actions={
         project && (
           <>
-            <SharingSummary project={project} sharing={sharing} size={24} />
+            <SharingSummary project={project} sharing={sharing} />
             {canManage(role) && (
               <Button size="sm" icon={Users} onClick={actions.openShare}>
                 Share

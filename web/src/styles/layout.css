@@ -324,6 +324,13 @@
   justify-content: center;
   padding: 6px 0;
 }
+.sb-user-ico {
+  display: none;
+  color: var(--text-2);
+}
+.sb-collapsed .sb-user-ico {
+  display: block;
+}
 
 /* ============================================================ page header + body */
 .page-header {

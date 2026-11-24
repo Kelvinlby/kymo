@@ -1158,37 +1158,14 @@ input[type='range'].range:focus-visible::-webkit-slider-thumb {
   margin-top: 1px;
 }
 
-/* ============================================================ avatar */
-.avatar {
-  --av-h: 240;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 50%;
-  background: hsl(var(--av-h) 55% 90%);
-  color: hsl(var(--av-h) 45% 30%);
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  flex-shrink: 0;
-  line-height: 1;
-  user-select: none;
-}
-:root[data-theme='dark'] .avatar {
-  background: hsl(var(--av-h) 35% 26%);
-  color: hsl(var(--av-h) 70% 86%);
-}
-.avatar-stack {
+/* ============================================================ member count */
+.member-count {
   display: inline-flex;
   align-items: center;
-}
-.avatar-stack .avatar {
-  box-shadow: 0 0 0 2px var(--surface);
-}
-.avatar-stack .avatar + .avatar {
-  margin-left: -6px;
-}
-.avatar-more {
-  background: var(--surface-3) !important;
-  color: var(--text-2) !important;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ============================================================ copy / code */

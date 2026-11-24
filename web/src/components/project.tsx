@@ -7,30 +7,23 @@ import { absTime, relTime } from '../lib/format';
 import { Link, navigate } from '../router';
 import { Ellipsis, FolderKanban, Globe, Lock, Pencil, Search, Trash, Users } from './icons';
 import { confirmDialog, toast } from './overlay';
-import { Alert, Avatar, Badge, Button, Dialog, Field, IconButton, MenuItem, MenuSep, Popover, SearchInput, Segmented, Skeleton, cx } from './ui';
+import { Alert, Badge, Button, Dialog, Field, IconButton, MenuItem, MenuSep, Popover, SearchInput, Segmented, Skeleton, cx } from './ui';
 
 export const ROLE_LABEL: Record<ProjectRole, string> = { owner: 'Owner', admin: 'Admin', editor: 'Editor', viewer: 'Viewer' };
 const userName = (u: UserRef) => u.display_name || u.username;
 
 // ------------------------------------------------------------------------------------- summary
-export function SharingSummary({ project, sharing, size = 22, showPrivate = true }: { project: Project; sharing?: Sharing | null; size?: number; showPrivate?: boolean }) {
+export function SharingSummary({ project, sharing, showPrivate = true }: { project: Project; sharing?: Sharing | null; showPrivate?: boolean }) {
   const ev = everyoneRole(project);
   const members = sharing?.members || [];
   const count = sharing ? members.length : project.member_count ?? 0;
-  const shown = members.slice(0, 4);
   const names = members.map((m) => `${userName(m.user)} (${m.role})`).join(', ');
   return (
     <span class="share-summary">
       {count > 0 && (
-        <span class="avatar-stack" title={names || `${count} member${count === 1 ? '' : 's'}`}>
-          {shown.map((m) => (
-            <Avatar key={m.user.id} name={userName(m.user)} size={size} />
-          ))}
-          {count > shown.length && (
-            <span class="avatar avatar-more" style={{ width: size + 'px', height: size + 'px', fontSize: Math.round(size * 0.42) + 'px' }}>
-              {shown.length ? '+' + (count - shown.length) : count}
-            </span>
-          )}
+        <span class="member-count" title={names || `${count} member${count === 1 ? '' : 's'}`}>
+          <Users size={13} aria-hidden="true" />
+          {count}
         </span>
       )}
       {ev && (
@@ -165,7 +158,6 @@ export function ShareDialog({ project, onClose, onSaved }: { project: Project; o
             <div class="share-list" role="list">
               <div class="share-row" role="listitem">
                 <span class="share-check" />
-                <Avatar name={userName(owner)} size={30} />
                 <div class="grow share-who">
                   <div class="share-name">{userName(owner)}</div>
                   <div class="share-sub">@{owner.username}</div>
@@ -176,7 +168,6 @@ export function ShareDialog({ project, onClose, onSaved }: { project: Project; o
                 [0, 1, 2].map((i) => (
                   <div class="share-row" key={i}>
                     <span class="share-check" />
-                    <Skeleton w={30} h={30} r={15} />
                     <Skeleton w="40%" />
                   </div>
                 ))}
@@ -187,7 +178,6 @@ export function ShareDialog({ project, onClose, onSaved }: { project: Project; o
                 return (
                   <div class={cx('share-row', r && 'on')} role="listitem" key={u.id}>
                     <input id={id} type="checkbox" class="checkbox share-check" checked={!!r} onChange={() => setRole(u.id, r ? null : 'viewer')} aria-label={`Give ${userName(u)} access`} />
-                    <Avatar name={userName(u)} size={30} />
                     <label class="grow share-who" for={id}>
                       <div class="share-name">{userName(u)}</div>
                       <div class="share-sub">@{u.username}</div>
@@ -410,7 +400,7 @@ export function ProjectCard({ project, exps, sharing }: { project: Project; exps
         <span class="faint" title={absTime(project.last_activity)}>
           {project.last_activity ? 'Active ' + relTime(project.last_activity) : 'No activity yet'}
         </span>
-        <SharingSummary project={project} sharing={sharing} size={20} />
+        <SharingSummary project={project} sharing={sharing} />
       </div>
       {actions.dialogs}
     </div>

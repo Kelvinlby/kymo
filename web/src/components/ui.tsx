@@ -542,18 +542,6 @@ export function ErrorBox({ error, title }: { error: unknown; title?: string }) {
   return <Alert tone="danger" title={title}>{msg}</Alert>;
 }
 
-export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
-  const parts = name.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  const ini = ((parts[0]?.[0] || '?') + (parts[1]?.[0] || '')).toUpperCase();
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return (
-    <span class="avatar" style={{ width: size + 'px', height: size + 'px', fontSize: Math.round(size * 0.4) + 'px', '--av-h': String(h % 360) } as Record<string, string>} aria-hidden="true">
-      {ini}
-    </span>
-  );
-}
-
 // ------------------------------------------------------------------------------------- copy
 export function CopyButton({ text, label = 'Copy', size = 'sm', variant = 'secondary', iconOnly, class: cls, tipPos }: { text: string; label?: string; size?: Size; variant?: Variant; iconOnly?: boolean; class?: string; tipPos?: 'top' | 'bottom' | 'right' }) {
   const [done, setDone] = useState(false);

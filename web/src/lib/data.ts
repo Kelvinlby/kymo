@@ -7,7 +7,7 @@ import { toDate } from './format';
 export interface ProjectsData {
   projects: Project[] | null;
   exps: Map<number, Experiment[]>;
-  /** sharing state of projects that have members (for avatars on cards) */
+  /** sharing state of projects that have members (for member counts on cards) */
   sharing: Map<number, Sharing>;
   error: unknown;
   loading: boolean;

@@ -4,7 +4,7 @@ import { useAuth } from '../auth';
 import { Page } from '../components/Shell';
 import { Ban, KeyRound, Link2, Mail, Plus, Shield, ShieldCheck, Trash, UserCheck, UserPlus, Users as UsersIcon, FingerprintPattern } from '../components/icons';
 import { confirmDialog, toast } from '../components/overlay';
-import { Alert, Avatar, Badge, Button, Card, CopyField, Dialog, EmptyState, ErrorBox, Field, MenuItem, MenuSep, Segmented, Skeleton, Switch, useAsync } from '../components/ui';
+import { Alert, Badge, Button, Card, CopyField, Dialog, EmptyState, ErrorBox, Field, MenuItem, MenuSep, Segmented, Skeleton, Switch, useAsync } from '../components/ui';
 import { absTime, relTime, toDate } from '../lib/format';
 import { navigate, useLocation } from '../router';
 import { RowMenu, SubNav } from './Settings';
@@ -137,7 +137,6 @@ function Users() {
                   <tr key={u.id} class={u.disabled ? 'row-dim' : ''}>
                     <td>
                       <div class="cell-user">
-                        <Avatar name={u.display_name || u.username} size={30} />
                         <div style={{ minWidth: 0 }}>
                           <div class="cell-user-name">
                             {u.display_name || u.username} {u.is_admin && <Badge tone="accent">Admin</Badge>} {self(u) && <Badge>You</Badge>}
