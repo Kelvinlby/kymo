@@ -147,6 +147,8 @@ export class PanelController {
   private animT = 0;
   /** right-button drag pan in progress */
   private panning = false;
+  /** fullscreen: a plain vertical wheel over the plot zooms x (in the grid it scrolls the page) */
+  wheelZoom = false;
   private statsRange: [number, number] | null = null;
   private data = new Map<string, SeriesData>(); // by sid(experiment, key)
   private prepared: Prepared[] = [];
@@ -677,7 +679,8 @@ export class PanelController {
 
   // ------------------------------------------------------------------ wheel / drag pan & zoom
   /**
-   * Over the plot:   wheel zooms x at the mouse (alt + wheel zooms y)
+   * Over the plot:   wheel zooms x at the mouse in fullscreen; in the grid a plain wheel scrolls the
+   *                  page and ctrl/⌘ + wheel (or pinch) zooms x · alt + wheel zooms y
    *                  shift + wheel or a sideways wheel/swipe pans x and keeps y where it is
    *                  right-button drag pans both axes
    * Over an axis:    wheel zooms that axis · shift / sideways pans it
@@ -702,13 +705,15 @@ export class PanelController {
     const sideways = Math.abs(dx) > Math.abs(dy);
     const d = sideways ? dx : dy;
     if (!d) return;
-    e.preventDefault();
     const pan = e.shiftKey || sideways;
-    let act: 'zx' | 'px' | 'zy' | 'py';
+    let act: 'zx' | 'px' | 'zy' | 'py' | null = null;
     if (onXAxis) act = pan ? 'px' : 'zx';
     else if (onYAxis) act = pan ? 'py' : 'zy';
     else if (e.altKey) act = pan ? 'py' : 'zy';
-    else act = pan ? 'px' : 'zx';
+    else if (pan) act = 'px';
+    else if (this.wheelZoom || e.ctrlKey || e.metaKey) act = 'zx';
+    if (!act) return; // let the page scroll
+    e.preventDefault();
     // trackpad pinch arrives as ctrl+wheel with small fractional deltas: give it a steeper curve
     const pinch = e.ctrlKey && e.deltaMode === 0 && !Number.isInteger(e.deltaY);
     const zf = Math.exp(Math.max(-300, Math.min(300, d)) * (pinch ? 0.01 : 0.002));

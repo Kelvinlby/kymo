@@ -35,7 +35,7 @@ export const SHORTCUTS: { group: string; items: ShortcutDoc[] }[] = [
       { keys: ['Shift', 'click'], label: 'Pick charts to compare; release Shift to open them in one chart' },
       { keys: ['r'], label: 'Show / hide runs pane' },
       { keys: ['Shift', 'drag'], label: 'Select a range for statistics' },
-      { keys: ['Scroll'], label: 'Zoom x-axis at the mouse (or pinch on a trackpad)' },
+      { keys: ['Scroll'], label: 'Zoom x-axis at the mouse in fullscreen (in the grid: ' + MOD + ' + scroll or pinch)' },
       { keys: ['Scroll on an axis'], label: 'Zoom that axis (Shift to pan it)' },
       { keys: ['Right-drag'], label: 'Pan the chart' },
       { keys: ['Shift', 'scroll'], label: 'Pan x-axis, keeping the y-axis fixed (or scroll sideways)' },
