@@ -528,7 +528,7 @@ input[type='range'].range:focus-visible::-webkit-slider-thumb {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 60;
+  z-index: 90; /* above .dialog-backdrop (80): menus open inside dialogs too */
   min-width: 180px;
   max-width: calc(100vw - 16px);
   max-height: min(520px, calc(100vh - 16px));
