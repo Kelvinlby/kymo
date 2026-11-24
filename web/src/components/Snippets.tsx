@@ -31,7 +31,7 @@ function hl(code: string, lang: Lang): ComponentChildren[] {
 export function snippetSet(token?: string, project = 'my-project') {
   const host = location.origin;
   const env = `export KYMO_HOST=${host}\nexport KYMO_API_KEY=${token || 'kymo_…   # create one in Settings → API tokens'}`;
-  const python = `import kymo  # pip install ./sdk/python  (reads KYMO_HOST / KYMO_API_KEY)
+  const python = `import kymo  # pip install kymo-logger  (reads KYMO_HOST / KYMO_API_KEY)
 
 run = kymo.init(
     project="${project}",

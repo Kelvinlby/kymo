@@ -1,6 +1,10 @@
-# Publishes the Python SDK (sdk/python, distribution "kymo-logger") to PyPI
-# when a tag like v0.1.0 is pushed. Uses PyPI Trusted Publishing (OIDC):
-# no API token is stored anywhere.
+# Releases the Python SDK (sdk/python, distribution "kymo-logger").
+# Push a tag like v0.1.0 (or create a release with a new tag in the GitHub
+# UI, which pushes the tag) and this workflow: tests -> builds -> uploads to
+# PyPI -> creates/updates the GitHub Release with the wheel and sdist.
+# Uses PyPI Trusted Publishing (OIDC): no API token is stored anywhere.
+# The tag must point at a commit that contains this file, and must match
+# the version in sdk/python/pyproject.toml.
 name: publish
 
 on:
@@ -60,3 +64,30 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true # re-running a release job is safe
+
+  # Every published tag also gets a GitHub Release with the built files
+  # attached. If you already created the release in the GitHub UI, the
+  # files are just added to it.
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create or update release
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          fi
+          gh release upload "$TAG" dist/* --clobber

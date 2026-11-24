@@ -8,22 +8,17 @@ You hand kymo a dict of numbers and it gets them to a [Kymo](https://github.com/
 * There are no runtime dependencies (stdlib only), and it needs Python ≥ 3.9. kymo works with any framework, because it doesn't know about any of them.
 
 ```bash
-pip install ./sdk/python        # or: uv pip install ./sdk/python
+pip install kymo-logger         # or: uv add kymo-logger
 export KYMO_HOST=https://kymo.example.com
 export KYMO_API_KEY=kymo_...    # create one in the web UI: Settings → API tokens
 ```
 
-The distribution is named `kymo-logger` (the PyPI name `kymo` belongs to an unrelated project); you still `import kymo`. To depend on it from another uv project straight from GitHub:
+The package is published on PyPI as `kymo-logger` (the name `kymo` belongs to an unrelated project); you still `import kymo`. To track unreleased changes on `main` instead, use a git source:
 
 ```toml
-[project]
-dependencies = ["kymo-logger"]
-
 [tool.uv.sources]
 kymo-logger = { git = "https://github.com/Kelvinlby/kymo", subdirectory = "sdk/python", branch = "main" }
 ```
-
-or, pip-compatible: `"kymo-logger @ git+https://github.com/Kelvinlby/kymo.git@main#subdirectory=sdk/python"`. Run `uv lock --upgrade-package kymo-logger` to pick up newer commits.
 
 ## Usage
 

@@ -6,7 +6,7 @@ a sharded Rust backend built for many-core / low-clock servers, and a uPlot web 
 | Part | Path | Docs |
 |---|---|---|
 | Server (Rust, axum, sharded SQLite + in-memory columnar cache) | `server/` | [server/NOTES-server.md](server/NOTES-server.md) |
-| Python SDK `kymo` (stdlib only) | `sdk/python/` | [sdk/python/README.md](sdk/python/README.md), [NOTES-sdk.md](sdk/python/NOTES-sdk.md) |
+| Python SDK `kymo-logger` (`import kymo`, stdlib only) | `sdk/python/` | [sdk/python/README.md](sdk/python/README.md), [NOTES-sdk.md](sdk/python/NOTES-sdk.md) |
 | Web UI (Preact + uPlot) | `web/` | [web/NOTES-web.md](web/NOTES-web.md) |
 | API contract | | [SPEC.md](SPEC.md) |
 | End-to-end test | `e2e/` | below |
@@ -31,7 +31,7 @@ For a real deployment put it behind HTTPS and set `KYMO_RP_ID=kymo.example.com`,
 ## Log from training
 
 ```python
-import kymo  # pip install ./sdk/python
+import kymo  # pip install kymo-logger   (or: uv add kymo-logger)
 run = kymo.init(project="llm-pretrain", experiment="7b-lr3e-4", config={"lr": 3e-4})  # KYMO_API_KEY, KYMO_HOST from env
 for step in range(steps):
     run.log({"train": {"loss": loss}, "lr": lr}, step=step)   # ~0.3–1 µs, never blocks or raises
