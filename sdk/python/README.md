@@ -13,6 +13,18 @@ export KYMO_HOST=https://kymo.example.com
 export KYMO_API_KEY=kymo_...    # create one in the web UI: Settings → API tokens
 ```
 
+The distribution is named `kymo-logger` (the PyPI name `kymo` belongs to an unrelated project); you still `import kymo`. To depend on it from another uv project straight from GitHub:
+
+```toml
+[project]
+dependencies = ["kymo-logger"]
+
+[tool.uv.sources]
+kymo-logger = { git = "https://github.com/Kelvinlby/kymo", subdirectory = "sdk/python", branch = "main" }
+```
+
+or, pip-compatible: `"kymo-logger @ git+https://github.com/Kelvinlby/kymo.git@main#subdirectory=sdk/python"`. Run `uv lock --upgrade-package kymo-logger` to pick up newer commits.
+
 ## Usage
 
 ```python
