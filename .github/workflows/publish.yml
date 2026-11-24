@@ -1,56 +1,156 @@
-# Releases the Python SDK (sdk/python, distribution "kymo-logger").
-# Push a tag like v0.1.0 (or create a release with a new tag in the GitHub
-# UI, which pushes the tag) and this workflow: tests -> builds -> uploads to
-# PyPI -> creates/updates the GitHub Release with the wheel and sdist.
-# Uses PyPI Trusted Publishing (OIDC): no API token is stored anywhere.
-# The tag must point at a commit that contains this file, and must match
-# the version in sdk/python/pyproject.toml.
+# One-click release of everything: Actions -> publish -> Run workflow, enter
+# a version like 0.2.3. On main, this workflow:
+#   1. bumps the version in all 7 files (SDK, server, web + lockfiles)
+#   2. tests the SDK, builds the web UI, the server (Docker, bookworm, so it
+#      needs only glibc >= 2.34) and the SDK wheel/sdist
+#   3. packages kymo-X.Y.Z-x86_64-linux.tar.gz (+ .sha256)
+#   4. commits "Release X.Y.Z", tags vX.Y.Z, pushes both
+#   5. publishes kymo-logger to PyPI (Trusted Publishing / OIDC, no token)
+#   6. creates the GitHub Release with notes and all files attached
+# Nothing is pushed until every build has passed. If PyPI or the release step
+# fails afterwards, "Re-run failed jobs" is safe.
+# Leave "highlights" empty to list the commits since the previous tag.
+# PyPI's trusted publisher is bound to this file name and the "pypi"
+# environment: keep both.
 name: publish
 
 on:
-  push:
-    tags: ["v*"]
-  workflow_dispatch: # manual run: builds and tests only, never publishes
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.2.3 (no leading v)"
+        required: true
+        type: string
+      highlights:
+        description: "Highlights for the release notes (markdown, optional; default: commit list)"
+        required: false
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
+env:
+  VERSION: ${{ inputs.version }}
+  TAG: v${{ inputs.version }}
+
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: sdk/python
+    permissions:
+      contents: write # push the release commit and tag
+    outputs:
+      prev_tag: ${{ steps.check.outputs.prev_tag }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags, for the previous-version check and notes
+
+      - name: Check inputs
+        id: check
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run this workflow on main (it was run on $GITHUB_REF)"; exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like 1.2.3 (got '$VERSION')"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists"; exit 1
+          fi
+          echo "prev_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
       - uses: astral-sh/setup-uv@v10.4.0 # no floating major tags since v8
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
 
-      - name: Check tag matches pyproject version
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Bump version in all files
         run: |
-          version="$(uv version --short)"
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject version ${version}"
-            exit 1
-          fi
+          sed -i -E "0,/^version = \"[^\"]*\"/s//version = \"$VERSION\"/" sdk/python/pyproject.toml server/Cargo.toml
+          sed -i -E "s/^__version__ = \"[^\"]*\"/__version__ = \"$VERSION\"/" sdk/python/src/kymo/_version.py
+          perl -0pi -e "s/(name = \"kymo-server\"\nversion = )\"[^\"]*\"/\${1}\"$VERSION\"/" server/Cargo.lock
+          (cd web && npm version "$VERSION" --no-git-tag-version --allow-same-version)
+          (cd sdk/python && uv lock)
+          git diff --stat
+          # every file must now carry the new version
+          for f in sdk/python/pyproject.toml server/Cargo.toml sdk/python/src/kymo/_version.py \
+                   server/Cargo.lock web/package.json web/package-lock.json sdk/python/uv.lock; do
+            grep -q "\"$VERSION\"" "$f" || { echo "::error::$f was not bumped"; exit 1; }
+          done
 
-      - name: Test (oldest and newest supported Python)
+      - name: Test SDK (oldest and newest supported Python)
+        working-directory: sdk/python
         run: |
           uv run --python 3.9  --with pytest pytest -q
           uv run --python 3.13 --with pytest pytest -q
 
-      - name: Build sdist and wheel
+      - name: Build SDK sdist and wheel
+        working-directory: sdk/python
         run: uv build --out-dir dist
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            server/target/bookworm
+          key: cargo-bookworm-${{ hashFiles('server/Cargo.lock') }}
+          restore-keys: cargo-bookworm-
+
+      - name: Build server (Docker, Debian bookworm)
+        # mounts the repo root: backup.rs include_str!s BACKUP-FORMAT.md
+        run: |
+          mkdir -p "$HOME/.cargo/registry"
+          docker run --rm -u "$(id -u):$(id -g)" -e CARGO_HOME=/cargo \
+            -v "$HOME/.cargo/registry:/cargo/registry" \
+            -v "$PWD:/repo" -e CARGO_TARGET_DIR=/repo/server/target/bookworm -w /repo/server \
+            rust:1.100-bookworm cargo build --release --locked
+
+      - name: Package server tarball
+        run: |
+          name="kymo-$VERSION-x86_64-linux"
+          mkdir -p "out/$name"
+          cp server/target/bookworm/release/kymo-server "out/$name/"
+          strip "out/$name/kymo-server"
+          cp -r web/dist "out/$name/web"
+          cp README.md SPEC.md BACKUP-FORMAT.md "out/$name/"
+          tar -C out -czf "out/$name.tar.gz" "$name"
+          (cd out && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          rm -rf "out/$name"
+          ls -l out
+
+      - name: Commit, tag and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sdk/python/pyproject.toml sdk/python/src/kymo/_version.py sdk/python/uv.lock \
+                  server/Cargo.toml server/Cargo.lock web/package.json web/package-lock.json
+          git commit -m "Release $VERSION"
+          git tag -a "$TAG" -m "$TAG"
+          git push --atomic origin HEAD:main "$TAG"
 
       - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: sdk/python/dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server
+          path: out/
 
-  publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+  pypi:
+    needs: release
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -62,32 +162,55 @@ jobs:
         with:
           name: dist
           path: dist/
-
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true # re-running a release job is safe
 
-  # Every published tag also gets a GitHub Release with the built files
-  # attached. If you already created the release in the GitHub UI, the
-  # files are just added to it.
   github-release:
-    needs: publish
+    needs: [release, pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TAG: ${{ github.ref_name }}
+      HIGHLIGHTS: ${{ inputs.highlights }}
+      PREV_TAG: ${{ needs.release.outputs.prev_tag }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           name: dist
-          path: dist/
+          path: assets/
+      - uses: actions/download-artifact@v8
+        with:
+          name: server
+          path: assets/
+
+      - name: Write release notes
+        run: |
+          {
+            echo "## Highlights"
+            if [ -n "$HIGHLIGHTS" ]; then
+              printf '%s\n' "$HIGHLIGHTS"
+            else
+              range="${PREV_TAG:+$PREV_TAG..}$TAG"
+              git log --no-merges --format='- %s' "$range" | grep -v -E '^- Release [0-9]' || true
+            fi
+            echo
+            echo "## Assets"
+            echo "- \`kymo-$VERSION-x86_64-linux.tar.gz\` — server binary (glibc ≥ 2.34) + web UI. Upgrade steps: README."
+            echo "- \`kymo_logger\` wheel/sdist — Python SDK (also on PyPI)."
+          } > notes.md
+          cat notes.md
 
       - name: Create or update release
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md
           fi
-          gh release upload "$TAG" dist/* --clobber
+          gh release upload "$TAG" assets/* --clobber

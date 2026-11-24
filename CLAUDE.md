@@ -26,20 +26,17 @@ Every change should serve these goals:
 
 ## Releasing
 
-Version `X.Y.Z`, tag `vX.Y.Z`:
+Releases are one click: GitHub → Actions → **publish** → Run workflow on `main`, enter the version `X.Y.Z` (optionally Highlights markdown; empty = commit list since the last tag). Or:
 
-1. Bump the version everywhere (same 7 files each release):
-   - `sdk/python/pyproject.toml`, `sdk/python/src/kymo/_version.py`, `server/Cargo.toml`
-   - `cd web && npm version X.Y.Z --no-git-tag-version` (package.json + lock)
-   - `cd server && cargo update -p kymo-server --offline`; `cd sdk/python && uv lock`
-2. Build the web UI: `cd web && npm run build`.
-3. Build the server in Docker on bookworm so it needs only glibc ≥ 2.34 (no musl). Mount the repo root, since `backup.rs` does `include_str!` on `BACKUP-FORMAT.md`:
-   ```bash
-   docker run --rm -u $(id -u):$(id -g) -e CARGO_HOME=/cargo -v $HOME/.cargo/registry:/cargo/registry \
-     -v $PWD:/repo -e CARGO_TARGET_DIR=/repo/server/target/bookworm -w /repo/server \
-     rust:1.100-bookworm cargo build --release --locked
-   ```
-4. Package `kymo-X.Y.Z-x86_64-linux.tar.gz` holding a top-level `kymo-X.Y.Z-x86_64-linux/` dir with: `kymo-server` (stripped), `web/` (= `web/dist`), `README.md`, `SPEC.md`, `BACKUP-FORMAT.md`. Write `sha256sum` output to `<tarball>.sha256`.
-5. Commit `Release X.Y.Z`, tag `vX.Y.Z`, push the commit and the tag.
-6. `gh release create vX.Y.Z --verify-tag --title vX.Y.Z` with notes (Highlights + Assets, as in earlier releases), uploading the tarball and its `.sha256`.
-   The tag push also runs `.github/workflows/publish.yml`: it tests the SDK, publishes `kymo-logger` to PyPI, and attaches the wheel and sdist to the same release. If the tag doesn't match `pyproject.toml`, it fails.
+```bash
+gh workflow run publish.yml -f version=X.Y.Z -f highlights="- **Thing.** What changed."
+```
+
+`.github/workflows/publish.yml` then bumps the version in all 7 files (`sdk/python/pyproject.toml`, `sdk/python/src/kymo/_version.py`, `sdk/python/uv.lock`, `server/Cargo.toml`, `server/Cargo.lock`, `web/package.json`, `web/package-lock.json`). It tests the SDK, builds the web UI and builds the server in `rust:1.100-bookworm` (so it needs only glibc ≥ 2.34, no musl). It packages `kymo-X.Y.Z-x86_64-linux.tar.gz` + `.sha256`, then commits `Release X.Y.Z`, tags `vX.Y.Z` and pushes. Last, it publishes `kymo-logger` to PyPI (Trusted Publishing, bound to this file name and the `pypi` environment) and creates the GitHub release with notes (Highlights + Assets) and every file attached. Nothing is pushed until all builds pass. Do not bump versions or tag by hand; after the run, `git pull`.
+
+To build the server locally the same way (mount the repo root, since `backup.rs` does `include_str!` on `BACKUP-FORMAT.md`):
+```bash
+docker run --rm -u $(id -u):$(id -g) -e CARGO_HOME=/cargo -v $HOME/.cargo/registry:/cargo/registry \
+  -v $PWD:/repo -e CARGO_TARGET_DIR=/repo/server/target/bookworm -w /repo/server \
+  rust:1.100-bookworm cargo build --release --locked
+```
