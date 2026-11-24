@@ -9,6 +9,7 @@ import { usePaletteItems } from '../lib/palette';
 import { ChartLine } from '../components/icons';
 import type { PanelController, PanelUiState } from './controller';
 import { Panel, Range, StatsRangeLine, hoveredPanel, type StatsData } from './Panel';
+import { paletteColor } from './colors';
 import { sid, type SeriesStore } from './store';
 import type { PlotSettings, RunInfo, XMode } from './types';
 
@@ -276,8 +277,9 @@ export function PanelGrid(props: {
   onClearFilter?: () => void;
 }) {
   const groups = useMemo(() => groupKeys(props.keys), [props.keys]);
-  const [fs, setFs] = useState<string | null>(null);
-  const openFs = useCallback((k: string) => setFs(k), []);
+  const [fs, setFs] = useState<string[] | null>(null);
+  const openFs = useCallback((k: string) => setFs([k]), []);
+  const compare = useCompareSelection(setFs);
   const pinned = useMemo(() => props.pins.filter((k) => props.allKeys.includes(k)), [props.pins, props.allKeys]);
   const gridCls = cx('panel-grid', props.layout !== 'auto' && 'cols-' + props.layout);
 
@@ -288,7 +290,7 @@ export function PanelGrid(props: {
       title: shortKey(k),
       sub: k,
       icon: ChartLine,
-      run: () => setFs(k),
+      run: () => setFs([k]),
     })),
   );
 
@@ -305,6 +307,8 @@ export function PanelGrid(props: {
       pinned={props.pins.includes(k)}
       onTogglePin={props.togglePin}
       onFullscreen={openFs}
+      compareIdx={compare.keys.indexOf(k)}
+      onCompareClick={compare.toggle}
     />
   );
 
@@ -353,32 +357,117 @@ export function PanelGrid(props: {
           </section>
         );
       })}
-      {fs && <FullscreenChart metricKey={fs} runs={props.runs} settings={props.settings} store={props.store} syncKey={props.syncKey + ':fs'} onClose={() => setFs(null)} pinned={props.pins.includes(fs)} togglePin={props.togglePin} />}
+      {compare.keys.length > 0 && (
+        <div class="compare-hint" role="status">
+          <b>{compare.keys.length}</b> {compare.keys.length === 1 ? 'chart' : 'charts'} picked · release <kbd class="kbd">Shift</kbd> to compare
+        </div>
+      )}
+      {fs &&
+        (fs.length === 1 ? (
+          <FullscreenChart metricKey={fs[0]} runs={props.runs} settings={props.settings} store={props.store} syncKey={props.syncKey + ':fs'} onClose={() => setFs(null)} pinned={props.pins.includes(fs[0])} togglePin={props.togglePin} />
+        ) : (
+          <FullscreenChart metricKeys={fs} runs={props.runs} settings={props.settings} store={props.store} syncKey={props.syncKey + ':fs'} onClose={() => setFs(null)} />
+        ))}
     </div>
   );
 }
 
-function FullscreenChart(props: { metricKey: string; runs: RunInfo[]; settings: PlotSettings; store: SeriesStore; syncKey: string; onClose: () => void; pinned: boolean; togglePin: (k: string) => void }) {
+/**
+ * Shift-click cards to pick them (in click order); releasing Shift opens the picked charts together.
+ * Losing focus while Shift is down (alt-tab) drops the selection instead of opening it.
+ */
+function useCompareSelection(open: (keys: string[]) => void) {
+  const [keys, setKeys] = useState<string[]>([]);
+  const ref = useRef(keys);
+  ref.current = keys;
+  const toggle = useCallback((k: string) => setKeys((ks) => (ks.includes(k) ? ks.filter((x) => x !== k) : [...ks, k])), []);
+  useEffect(() => {
+    const up = (e: KeyboardEvent) => {
+      if (e.key !== 'Shift' || !ref.current.length) return;
+      open(ref.current);
+      setKeys([]);
+    };
+    const blur = () => setKeys([]);
+    window.addEventListener('keyup', up, true);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keyup', up, true);
+      window.removeEventListener('blur', blur);
+    };
+  }, [open]);
+  return { keys, toggle };
+}
+
+/** Dash patterns that tell metrics apart when lines are coloured by run (first metric solid). */
+const DASHES: (number[] | undefined)[] = [undefined, [7, 4], [2, 3], [12, 4, 2, 4], [4, 4], [1, 5]];
+
+/** One line per metric × run: coloured by run and dashed per metric; with a single run, coloured per metric. */
+function compareLines(keys: string[], runs: RunInfo[]): RunInfo[] {
+  const out: RunInfo[] = [];
+  const byMetric = runs.length === 1;
+  keys.forEach((k, i) => {
+    for (const r of runs) {
+      out.push(
+        byMetric
+          ? { ...r, key: k, name: k, color: paletteColor(i) }
+          : { ...r, key: k, name: `${r.name} · ${k}`, dash: DASHES[i % DASHES.length] },
+      );
+    }
+  });
+  return out;
+}
+
+function DashSample({ dash, color }: { dash?: number[]; color: string }) {
+  return (
+    <svg width="26" height="8" aria-hidden="true">
+      <line x1="1" y1="4" x2="25" y2="4" stroke={color} stroke-width="2" stroke-dasharray={dash?.join(' ')} />
+    </svg>
+  );
+}
+
+function FullscreenChart(
+  props: { runs: RunInfo[]; settings: PlotSettings; store: SeriesStore; syncKey: string; onClose: () => void } & (
+    | { metricKey: string; metricKeys?: undefined; pinned: boolean; togglePin: (k: string) => void }
+    | { metricKeys: string[]; metricKey?: undefined; pinned?: undefined; togglePin?: undefined }
+  ),
+) {
   const [st, setSt] = useState<{ s: StatsData | null; ui: PanelUiState } | null>(null);
   const sink = useCallback((s: StatsData | null, ui: PanelUiState) => setSt({ s, ui }), []);
   const ctrlRef = useRef<PanelController | null>(null);
-  const g = groupOf(props.metricKey);
+  const keys = props.metricKeys;
+  const lines = useMemo(() => (keys ? compareLines(keys, props.runs) : props.runs), [keys, props.runs]);
+  const panelKey = keys ? keys.join(' + ') : props.metricKey!;
+  const g = keys ? '' : groupOf(props.metricKey!);
+  const nRuns = props.runs.length;
+  const runsLabel = `${nRuns} ${nRuns === 1 ? 'run' : 'runs'}`;
   return (
     <Dialog
       size="full"
       class="fs-dialog"
-      title={shortKey(props.metricKey)}
+      title={keys ? `Compare ${keys.length} metrics` : shortKey(props.metricKey!)}
       description={
-        <>
-          {g ? <span class="mono">{g}</span> : 'General'} · {props.runs.length} {props.runs.length === 1 ? 'run' : 'runs'} · drag to zoom, shift-drag to select a range
-        </>
+        keys ? (
+          <span class="compare-legend">
+            {keys.map((k, i) => (
+              <span class="cl-item" key={k}>
+                <DashSample dash={nRuns === 1 ? undefined : DASHES[i % DASHES.length]} color={nRuns === 1 ? paletteColor(i) : 'currentColor'} />
+                <span class="mono">{k}</span>
+              </span>
+            ))}
+            <span>· {runsLabel}</span>
+          </span>
+        ) : (
+          <>
+            {g ? <span class="mono">{g}</span> : 'General'} · {runsLabel} · drag to zoom, shift-drag to select a range
+          </>
+        )
       }
       onClose={props.onClose}
     >
       <Panel
-        metricKey={props.metricKey}
-        title={shortKey(props.metricKey)}
-        runs={props.runs}
+        metricKey={panelKey}
+        title={keys ? panelKey : shortKey(props.metricKey!)}
+        runs={lines}
         settings={props.settings}
         store={props.store}
         syncKey={props.syncKey}
@@ -408,7 +497,7 @@ function FullscreenChart(props: { metricKey: string; runs: RunInfo[]; settings: 
             ['count', fmtInt(s.count)],
           ];
           return (
-            <div class="fs-stat" key={run.id}>
+            <div class="fs-stat" key={run.id + ':' + (run.key ?? '')}>
               <div class="fs-stat-name">
                 <span class="swatch" style={{ background: run.color }} />
                 <span>{run.name}</span>

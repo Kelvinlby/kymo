@@ -117,7 +117,7 @@ export class PanelController {
   private zoomX: [number, number] | null = null;
   private zoomSteps: StepWindow | null = null;
   private statsRange: [number, number] | null = null;
-  private data = new Map<number, SeriesData>();
+  private data = new Map<string, SeriesData>(); // by sid(experiment, key)
   private prepared: Prepared[] = [];
   private aligned: uPlot.AlignedData | null = null;
   private unsub: (() => void) | null = null;
@@ -171,16 +171,17 @@ export class PanelController {
   }
 
   setRuns(runs: RunInfo[]) {
-    const k = runs.map((r) => r.id + ':' + r.color + ':' + r.name).join('|');
+    const k = runs.map((r) => r.id + ':' + (r.key ?? '') + ':' + r.color + ':' + r.name + ':' + (r.dash ?? '')).join('|');
     if (k === this.runsKey) return;
     this.runsKey = k;
     this.runs = runs;
     this.unsub?.();
     this.unsub = this.store.subscribe(
-      runs.map((r) => sid(r.id, this.key)),
+      runs.map((r) => this.slot(r)),
       () => this.queueRefresh(),
     );
-    for (const id of [...this.data.keys()]) if (!runs.some((r) => r.id === id)) this.data.delete(id);
+    const keep = new Set(runs.map((r) => this.slot(r)));
+    for (const s of [...this.data.keys()]) if (!keep.has(s)) this.data.delete(s);
     this.recreate();
     this.refresh();
   }
@@ -220,6 +221,13 @@ export class PanelController {
   }
 
   // ------------------------------------------------------------------ data
+  private keyOf(r: RunInfo) {
+    return r.key ?? this.key;
+  }
+  private slot(r: RunInfo) {
+    return sid(r.id, this.keyOf(r));
+  }
+
   private queueRefresh() {
     if (!this.visible || this.refreshQueued) return;
     this.refreshQueued = true;
@@ -234,14 +242,15 @@ export class PanelController {
     if (!this.visible || this.destroyed) return;
     const w = this.zoomSteps;
     const mp = this.maxPoints;
-    const refs = this.runs.map((r) => ({ experiment_id: r.id, key: this.key }));
+    const refs = this.runs.map((r) => ({ experiment_id: r.id, key: this.keyOf(r) }));
     let changed = false;
     let allFresh = true;
     for (const ref of refs) {
       const c = this.store.peek(ref, w, mp);
+      const s = sid(ref.experiment_id, ref.key);
       if (c) {
-        if (this.data.get(ref.experiment_id) !== c.data) {
-          this.data.set(ref.experiment_id, c.data);
+        if (this.data.get(s) !== c.data) {
+          this.data.set(s, c.data);
           changed = true;
         }
         if (!c.fresh) allFresh = false;
@@ -257,7 +266,7 @@ export class PanelController {
     this.store.getMany(refs, w, mp).then(
       (ds) => {
         if (seq !== this.seq || this.destroyed) return;
-        for (const d of ds) this.data.set(d.experimentId, d);
+        for (const d of ds) this.data.set(sid(d.experimentId, d.key), d);
         this.setUi({ loading: false });
         this.rebuild();
       },
@@ -286,7 +295,7 @@ export class PanelController {
     let downsampled = false;
     let points = 0;
     for (const run of this.runs) {
-      const d = this.data.get(run.id);
+      const d = this.data.get(this.slot(run));
       if (!d) continue;
       const x = this.xOf(d, run);
       let y = d.value;
@@ -409,8 +418,8 @@ export class PanelController {
     const bands: uPlot.Band[] = [];
     this.runs.forEach((r, i) => {
       const base = 1 + i * SERIES_PER_RUN;
-      series.push({ label: r.name, stroke: r.color, width: 1.6, spanGaps: false, points: { show: false } });
-      series.push({ label: r.name + ' (raw)', stroke: withAlpha(r.color, 0.28), width: 1, points: { show: false } });
+      series.push({ label: r.name, stroke: r.color, width: 1.6, spanGaps: false, points: { show: false }, ...(r.dash ? { dash: r.dash } : {}) });
+      series.push({ label: r.name + ' (raw)', stroke: withAlpha(r.color, 0.28), width: 1, points: { show: false }, ...(r.dash ? { dash: r.dash } : {}) });
       series.push({ label: r.name + ' max', stroke: 'transparent', width: 0, points: { show: false } });
       series.push({ label: r.name + ' min', stroke: 'transparent', width: 0, points: { show: false } });
       bands.push({ series: [base + 2, base + 3], fill: withAlpha(r.color, 0.13) });
@@ -713,13 +722,14 @@ export class PanelController {
 
   csv(): string {
     const smooth = this.smoothing > 0;
-    const lines = ['run,experiment_id,step,ts,value' + (smooth ? ',smoothed' : '') + ',bucket_min,bucket_max'];
+    const multi = this.runs.some((r) => r.key != null);
+    const lines = [(multi ? 'metric,' : '') + 'run,experiment_id,step,ts,value' + (smooth ? ',smoothed' : '') + ',bucket_min,bucket_max'];
     const q = (s: string) => (/[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
     for (const p of this.prepared) {
       const { d } = p;
       for (let i = 0; i < d.step.length; i++) {
         const v = d.value[i];
-        let line = `${q(p.run.name)},${p.run.id},${d.step[i]},${d.ts[i]},${Number.isFinite(v) ? v : ''}`;
+        let line = `${multi ? q(this.keyOf(p.run)) + ',' : ''}${q(p.run.name)},${p.run.id},${d.step[i]},${d.ts[i]},${Number.isFinite(v) ? v : ''}`;
         if (smooth) line += ',' + (Number.isFinite(p.main[i]) ? p.main[i] : '');
         line += ',' + (d.min && Number.isFinite(d.min[i]) ? d.min[i] : '') + ',' + (d.max && Number.isFinite(d.max[i]) ? d.max[i] : '');
         lines.push(line);

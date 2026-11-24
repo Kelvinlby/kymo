@@ -17,6 +17,10 @@ export interface RunInfo {
   color: string;
   /** fallback start time (unix seconds) for relative time */
   startTs?: number | null;
+  /** metric key of this line when it differs from the panel's (compare view: one line per metric × run) */
+  key?: string;
+  /** canvas dash pattern for the line (compare view: one pattern per metric) */
+  dash?: number[];
 }
 
 export interface PanelOverrides {

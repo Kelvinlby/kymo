@@ -40,11 +40,14 @@ interface Props {
   full?: boolean;
   statsSink?: (s: StatsData | null, ui: PanelUiState) => void;
   ctrlRef?: { current: PanelController | null };
+  /** position in the compare selection (shift-click), or -1 */
+  compareIdx?: number;
+  onCompareClick?: (key: string) => void;
 }
 
 const INITIAL_UI: PanelUiState = { loading: false, zoomed: false, statsRange: null, empty: false, downsampled: false, error: null, pointCount: 0 };
 
-export const Panel = memo(function Panel({ metricKey, title, group, runs, settings, store, syncKey, pinned, onTogglePin, onFullscreen, full, statsSink, ctrlRef }: Props) {
+export const Panel = memo(function Panel({ metricKey, title, group, runs, settings, store, syncKey, pinned, onTogglePin, onFullscreen, full, statsSink, ctrlRef, compareIdx = -1, onCompareClick }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<HTMLDivElement>(null);
   const ctrl = useRef<PanelController | null>(null);
@@ -96,11 +99,26 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
   const logY = ov.logY ?? settings.logY;
   const fileBase = metricKey.replace(/[^\w.-]+/g, '_');
   const noRuns = runs.length === 0;
+  const downAt = useRef<[number, number] | null>(null);
+  const openFull = onFullscreen && !full ? () => onFullscreen(metricKey) : undefined;
 
   return (
     <div
-      class={cx('panel', full && 'full')}
+      class={cx('panel', full && 'full', compareIdx >= 0 && 'compare-sel')}
       ref={rootRef}
+      onMouseDown={(e) => {
+        downAt.current = [e.clientX, e.clientY];
+        // shift-click would otherwise extend a text selection (the chart itself needs its mousedown)
+        if (e.shiftKey && onCompareClick && !(e.target as Element).closest('.u-over')) e.preventDefault();
+      }}
+      onClick={(e) => {
+        if (!e.shiftKey || !onCompareClick) return;
+        if ((e.target as Element).closest('button, a, input, [role="menu"]')) return;
+        const d = downAt.current;
+        // a shift-drag on the chart selects a stats range; only a click (no movement) adds to the comparison
+        if (d && Math.hypot(e.clientX - d[0], e.clientY - d[1]) > 4) return;
+        onCompareClick(metricKey);
+      }}
       onMouseEnter={() => onFullscreen && (hovered = { key: metricKey, open: () => onFullscreen(metricKey) })}
       onMouseLeave={() => hovered?.key === metricKey && (hovered = null)}
     >
@@ -111,8 +129,20 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
             {metricKey}
           </span>
         ) : (
-          <span class="panel-title" title={metricKey}>
+          <span
+            class={cx('panel-title', openFull && 'clickable')}
+            title={openFull ? metricKey + ' · click for fullscreen, shift-click to compare' : metricKey}
+            role={openFull ? 'button' : undefined}
+            tabIndex={openFull ? 0 : undefined}
+            onClick={(e) => !e.shiftKey && openFull?.()}
+            onKeyDown={(e) => openFull && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openFull())}
+          >
             {title}
+          </span>
+        )}
+        {compareIdx >= 0 && (
+          <span class="compare-num" aria-label={'Compare selection ' + (compareIdx + 1)}>
+            {compareIdx + 1}
           </span>
         )}
         <span class="panel-tags">
@@ -196,7 +226,7 @@ export const Panel = memo(function Panel({ metricKey, title, group, runs, settin
                     <MenuSep />
                     <MenuLabel>Full-resolution CSV</MenuLabel>
                     {runs.slice(0, 12).map((r) => (
-                      <MenuItem key={r.id} icon={Download} href={api.rawUrl(r.id, metricKey, 'csv')} download onSelect={close}>
+                      <MenuItem key={r.id + ':' + (r.key ?? '')} icon={Download} href={api.rawUrl(r.id, r.key ?? metricKey, 'csv')} download onSelect={close}>
                         <span class="row" style={{ gap: 7 }}>
                           <span class="swatch" style={{ background: r.color }} />
                           <span class="ellipsis">{r.name}</span>
@@ -299,7 +329,7 @@ function StatsTable({ stats, ui, xMode, onClear }: { stats: StatsData | null; ui
             {stats.runs.map((run, i) => {
               const s = stats.stats[i];
               return (
-                <tr key={run.id}>
+                <tr key={run.id + ':' + (run.key ?? '')}>
                   <td>
                     <span class="run-cell">
                       <span class="swatch" style={{ background: run.color }} />

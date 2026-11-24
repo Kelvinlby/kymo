@@ -74,6 +74,13 @@ The tooltip never reads layout during a move (overlay rect = uPlot's cached `u.r
 only rewrites its HTML when the content changed; `.plot-host` uses `contain: strict`. Measured on the mock (6 panels,
 8 moves/frame): ~17 ms → ~0.2 ms median main-thread time per frame.
 
+Click a card's title (or ⤢, or `f` while hovering) = fullscreen. Compare: shift-click cards (not their buttons) to pick
+them in order (accent ring + number, floating hint); releasing Shift opens one fullscreen chart with every picked metric
+(window blur drops the pick). A shift-*drag* on a chart is still the stats range and does not pick the card. The compare
+chart draws one line per metric × run — coloured by run and dashed per metric, or coloured per metric when only one
+run is selected — on one shared y axis; `RunInfo.key`/`dash` let a controller line carry its own metric. CSV export
+gains a `metric` column there.
+
 Shortcuts: `/` metric filter, `s` smoothing on/off, `l` log-y, `x` cycle x axis, `f` fullscreen the hovered chart,
 `r` runs pane, `?` help, `[` sidebar, `g o / g p / g s` navigation, Esc closes the top-most layer.
 

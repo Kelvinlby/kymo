@@ -180,6 +180,78 @@
     var(--shadow-md),
     var(--card-ring);
 }
+.panel.compare-sel,
+.panel.compare-sel:hover {
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 2px var(--accent);
+}
+.panel-title.clickable {
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+.panel-title.clickable:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--accent-soft-2);
+}
+.panel-title.clickable:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.compare-num {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* floating hint while picking charts to compare */
+.compare-hint {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow:
+    var(--shadow-lg),
+    var(--card-ring);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.compare-hint b {
+  color: var(--text);
+}
+.compare-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: center;
+}
+.compare-legend .cl-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.compare-legend svg {
+  flex: none;
+}
 .panel-head {
   display: flex;
   align-items: center;
