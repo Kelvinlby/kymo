@@ -13,7 +13,7 @@ Every change should serve these goals:
 - **Modern look.** The web UI should look clean and current.
 - **High performance.**
   - The Python SDK logs without blocking: `log()` must never stall the training loop.
-  - It must scale to terabyte-size LLM training runs (huge metric volumes, many steps, many experiments).
+  - It must scale to tera-scale LLM training runs (huge metric volumes, many steps, many experiments).
   - The web UI renders charts very fast, even for large series.
   - Logged data shows up live in the UI.
 - **Efficiency.** The whole stack should run comfortably on a modest server. Reference point: a normal 4-core / 8 GB VPS with 1st/2nd-gen Xeon CPUs. This shows the efficiency we expect; don't tune specifically for that hardware.

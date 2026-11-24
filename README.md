@@ -37,9 +37,16 @@ for step in range(steps):
     run.log({"train": {"loss": loss}, "lr": lr}, step=step)   # ~0.3–1 µs, never blocks or raises
 ```
 
-Nested dicts become `train/loss`. GPU tensors are converted on the background thread, so `log()` never forces a CUDA sync.
+Nested dicts become `train/loss`. Values are converted on a background thread, so `log()` never waits on anything.
 Failed sends retry with backoff, then spill to `~/.cache/kymo/spool` and replay later (`python -m kymo sync`).
-`HTTP(S)_PROXY` / `ALL_PROXY` / `NO_PROXY` are honored. Only rank 0 logs by default.
+`HTTP(S)_PROXY` / `ALL_PROXY` / `NO_PROXY` are honored. Every process that calls `init()` logs; pass `enabled=False` to opt one out.
+
+The SDK is optional and framework-neutral: anything that can POST JSON can log.
+
+```bash
+curl -H "Authorization: Bearer $KYMO_API_KEY" -H "Content-Type: application/json" \
+  -d '{"project":"p","experiment":"e","metrics":{"train":{"loss":1.2}}}' $KYMO_HOST/api/v1/ingest
+```
 
 ## Tests
 

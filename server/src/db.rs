@@ -98,6 +98,19 @@ const META_MIGRATIONS: &[&str] = &[
         UNIQUE(experiment_id, key)
     );
     "#,
+    // v2: per-user sharing replaces projects.shared (kept, ignored)
+    r#"
+    ALTER TABLE projects ADD COLUMN everyone TEXT CHECK(everyone IN ('viewer', 'editor'));
+    UPDATE projects SET everyone = 'viewer' WHERE shared = 1;
+    CREATE TABLE project_members(
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('viewer', 'editor')),
+        PRIMARY KEY(project_id, user_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX project_members_user ON project_members(user_id);
+    CREATE INDEX experiments_project_status ON experiments(project_id, status);
+    "#,
 ];
 
 pub const SHARD_MIGRATIONS: &[&str] = &[

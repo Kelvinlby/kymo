@@ -1,8 +1,8 @@
 //! Projects and experiments (read: session or token; write: full session).
 
 use super::{
-    JsonBody, PROJECT_COLS, ProjectRow, experiment_project, f64_json, parse_json_text, project_from_row,
-    project_json, readable_project, writable_project,
+    JsonBody, Role, experiment_project, f64_json, managed_project, parse_json_text, project_from_row, project_json,
+    project_select, readable_project, role_of,
 };
 use crate::AppState;
 use crate::auth::{FullSession, ReadAuth};
@@ -30,27 +30,28 @@ pub fn series_of(c: &Connection, sql: &str, param: i64) -> ApiResult<Vec<(i64, V
     Ok(out)
 }
 
-fn project_stats(c: &Connection, pid: i64) -> rusqlite::Result<(i64, Option<i64>)> {
-    c.prepare_cached("SELECT count(*), max(updated_at) FROM experiments WHERE project_id=?1")?
-        .query_row([pid], |r| Ok((r.get(0)?, r.get(1)?)))
-}
 
 pub async fn list(State(s): S, ReadAuth(p): ReadAuth) -> ApiResult<Json<Value>> {
     let v = s
         .db
         .call(move |c| {
             let mut st = c.prepare_cached(&format!(
-                "SELECT {PROJECT_COLS}, (SELECT count(*) FROM experiments e WHERE e.project_id=p.id),
-                        (SELECT max(updated_at) FROM experiments e WHERE e.project_id=p.id)
-                 FROM projects p JOIN users u ON u.id=p.owner_id
-                 WHERE ?1 OR p.owner_id=?2 OR p.shared
-                 ORDER BY p.created_at DESC, p.id DESC"
+                "{} WHERE :admin OR p.owner_id=:uid OR p.everyone IS NOT NULL
+                    OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=:uid)
+                 ORDER BY p.created_at DESC, p.id DESC",
+                project_select()
             ))?;
-            let rows = st.query_map(params![p.user.is_admin, p.user.id], |r| {
-                let pr = project_from_row(r)?;
-                Ok(project_json(&pr, r.get(7)?, r.get(8)?))
+            let rows = st.query_map(rusqlite::named_params! {":admin": p.user.is_admin, ":uid": p.user.id}, |r| {
+                project_from_row(r)
             })?;
-            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            let mut out = Vec::new();
+            for pr in rows {
+                let pr = pr?;
+                if let Some(role) = role_of(&p, &pr) {
+                    out.push(project_json(&pr, role));
+                }
+            }
+            Ok(out)
         })
         .await?;
     Ok(Json(Value::Array(v)))
@@ -87,19 +88,18 @@ pub async fn create(State(s): S, FullSession(p): FullSession, JsonBody(req): Jso
             if n == 0 {
                 return Err(ApiError::conflict("project_exists", "you already have a project with this name"));
             }
-            super::load_project(c, c.last_insert_rowid())?.ok_or_else(|| ApiError::internal("project vanished"))
+            super::load_project(c, c.last_insert_rowid(), uid)?.ok_or_else(|| ApiError::internal("project vanished"))
         })
         .await?;
-    Ok(Json(project_json(&pr, 0, None)))
+    Ok(Json(project_json(&pr, Role::Owner)))
 }
 
 pub async fn get_one(State(s): S, ReadAuth(p): ReadAuth, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     let v = s
         .db
         .call(move |c| {
-            let pr = readable_project(c, &p, id)?;
-            let (n, last) = project_stats(c, id)?;
-            Ok(project_json(&pr, n, last))
+            let (pr, role) = readable_project(c, &p, id)?;
+            Ok(project_json(&pr, role))
         })
         .await?;
     Ok(Json(v))
@@ -109,6 +109,7 @@ pub async fn get_one(State(s): S, ReadAuth(p): ReadAuth, Path(id): Path<i64>) ->
 pub struct PatchReq {
     name: Option<String>,
     description: Option<String>,
+    /// Deprecated: `true` = everyone viewer (if no everyone role yet), `false` = no everyone role.
     shared: Option<bool>,
 }
 
@@ -126,12 +127,12 @@ pub async fn patch(
     if let Some(d) = &req.description {
         check_description(d)?;
     }
-    let renamed = req.name.is_some();
+    let renamed = req.name.is_some() || req.shared.is_some();
     let v = s
         .db
         .call(move |c| {
             let tx = c.transaction()?;
-            let pr: ProjectRow = writable_project(&tx, &p, id)?;
+            let (pr, _) = managed_project(&tx, &p, id)?;
             if let Some(n) = &req.name {
                 if *n != pr.name {
                     let taken: bool = tx.query_row(
@@ -149,12 +150,16 @@ pub async fn patch(
                 tx.execute("UPDATE projects SET description=?1 WHERE id=?2", params![d, id])?;
             }
             if let Some(sh) = req.shared {
-                tx.execute("UPDATE projects SET shared=?1 WHERE id=?2", params![sh, id])?;
+                if sh {
+                    tx.execute("UPDATE projects SET everyone='viewer' WHERE id=?1 AND everyone IS NULL", [id])?;
+                } else {
+                    tx.execute("UPDATE projects SET everyone=NULL WHERE id=?1", [id])?;
+                }
             }
-            let pr = super::load_project(&tx, id)?.ok_or_else(|| ApiError::not_found("project"))?;
-            let (n, last) = project_stats(&tx, id)?;
+            let pr = super::load_project(&tx, id, p.user.id)?.ok_or_else(|| ApiError::not_found("project"))?;
+            let role = role_of(&p, &pr).unwrap_or(Role::Viewer);
             tx.commit()?;
-            Ok(project_json(&pr, n, last))
+            Ok(project_json(&pr, role))
         })
         .await?;
     if renamed {
@@ -167,7 +172,7 @@ pub async fn delete(State(s): S, FullSession(p): FullSession, Path(id): Path<i64
     let series = s
         .db
         .call(move |c| {
-            writable_project(c, &p, id)?;
+            managed_project(c, &p, id)?;
             let series = series_of(c, "SELECT id FROM experiments WHERE project_id=?1", id)?;
             c.execute("DELETE FROM projects WHERE id=?1", [id])?;
             Ok(series)
@@ -236,14 +241,15 @@ pub async fn experiment_get(State(s): S, ReadAuth(p): ReadAuth, Path(id): Path<i
     let v = s
         .db
         .call(move |c| {
-            let pr = experiment_project(c, &p, id, false)?;
+            let (pr, role) = experiment_project(c, &p, id, false)?;
             let mut v = c
                 .prepare_cached(&format!("SELECT {EXP_COLS} FROM experiments WHERE id=?1"))?
                 .query_row([id], |r| exp_json(r, |e| st.store.exp_agg(e)))
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("experiment"))?;
             v["project"] = json!({"id": pr.id, "name": pr.name, "owner": {"id": pr.owner_id, "username": pr.owner_username}});
-            v["can_edit"] = json!(super::can_write(&p, &pr));
+            v["can_edit"] = json!(role.can_edit());
+            v["role"] = json!(role.as_str());
             Ok(v)
         })
         .await?;
@@ -290,7 +296,7 @@ pub async fn experiment_patch(
         .db
         .call(move |c| {
             let tx = c.transaction()?;
-            let pr = experiment_project(&tx, &p, id, true)?;
+            let (pr, _) = experiment_project(&tx, &p, id, true)?;
             if let Some(n) = &req.name {
                 let taken: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM experiments WHERE project_id=?1 AND name=?2 AND id<>?3)",
@@ -363,4 +369,118 @@ pub async fn experiment_metrics(State(s): S, ReadAuth(p): ReadAuth, Path(id): Pa
         })
         .collect();
     Ok(Json(Value::Array(out)))
+}
+
+// ---- sharing / user directory -----------------------------------------------------------
+
+/// `GET /users` — active users for the share picker (full session; not API tokens).
+pub async fn users_directory(State(s): S, FullSession(_): FullSession) -> ApiResult<Json<Value>> {
+    let v = s
+        .db
+        .call(|c| {
+            let mut q = c.prepare_cached("SELECT id, username, display_name FROM users WHERE disabled=0 ORDER BY username")?;
+            let rows = q.query_map([], |r| {
+                Ok(json!({"id": r.get::<_, i64>(0)?, "username": r.get::<_, String>(1)?,
+                    "display_name": r.get::<_, String>(2)?}))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .await?;
+    Ok(Json(Value::Array(v)))
+}
+
+fn sharing_json(c: &Connection, pid: i64, everyone: Option<String>) -> ApiResult<Value> {
+    let mut q = c.prepare_cached(
+        "SELECT u.id, u.username, u.display_name, m.role FROM project_members m JOIN users u ON u.id=m.user_id
+         WHERE m.project_id=?1 ORDER BY u.username",
+    )?;
+    let rows = q.query_map([pid], |r| {
+        Ok(json!({"user": {"id": r.get::<_, i64>(0)?, "username": r.get::<_, String>(1)?,
+            "display_name": r.get::<_, String>(2)?}, "role": r.get::<_, String>(3)?}))
+    })?;
+    let members = rows.collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({"everyone": everyone, "members": members}))
+}
+
+/// `GET /projects/{id}/sharing` — anyone who can read the project.
+pub async fn sharing_get(State(s): S, ReadAuth(p): ReadAuth, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    let v = s
+        .db
+        .call(move |c| {
+            let (pr, _) = readable_project(c, &p, id)?;
+            sharing_json(c, id, pr.everyone)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+pub struct MemberReq {
+    user_id: i64,
+    role: String,
+}
+
+#[derive(Deserialize)]
+pub struct SharingReq {
+    #[serde(default)]
+    everyone: Option<String>,
+    #[serde(default)]
+    members: Vec<MemberReq>,
+}
+
+/// `PUT /projects/{id}/sharing` — replaces the whole sharing state (owner/admin only).
+pub async fn sharing_put(
+    State(s): S,
+    FullSession(p): FullSession,
+    Path(id): Path<i64>,
+    JsonBody(req): JsonBody<SharingReq>,
+) -> ApiResult<Json<Value>> {
+    if let Some(e) = &req.everyone {
+        if Role::parse_share(e).is_none() {
+            return Err(ApiError::invalid("invalid_role", "everyone must be null, \"viewer\" or \"editor\""));
+        }
+    }
+    if req.members.len() > 10_000 {
+        return Err(ApiError::invalid("too_many_members", "at most 10000 members"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for m in &req.members {
+        if Role::parse_share(&m.role).is_none() {
+            return Err(ApiError::invalid("invalid_role", "member role must be \"viewer\" or \"editor\""));
+        }
+        if !seen.insert(m.user_id) {
+            return Err(ApiError::invalid("duplicate_member", format!("user {} listed twice", m.user_id)));
+        }
+    }
+    let v = s
+        .db
+        .call(move |c| {
+            let tx = c.transaction()?;
+            let (pr, _) = managed_project(&tx, &p, id)?;
+            for m in &req.members {
+                if m.user_id == pr.owner_id {
+                    return Err(ApiError::invalid("owner_not_member", "the owner can't be a member of their own project"));
+                }
+                let ok: bool =
+                    tx.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE id=?1)", [m.user_id], |r| r.get(0))?;
+                if !ok {
+                    return Err(ApiError::invalid("unknown_user", format!("no user with id {}", m.user_id)));
+                }
+            }
+            tx.execute("UPDATE projects SET everyone=?1 WHERE id=?2", params![req.everyone, id])?;
+            tx.execute("DELETE FROM project_members WHERE project_id=?1", [id])?;
+            {
+                let mut ins = tx.prepare_cached("INSERT INTO project_members(project_id, user_id, role) VALUES(?1,?2,?3)")?;
+                for m in &req.members {
+                    ins.execute(params![id, m.user_id, m.role])?;
+                }
+            }
+            let v = sharing_json(&tx, id, req.everyone.clone())?;
+            tx.commit()?;
+            Ok(v)
+        })
+        .await?;
+    // Ingest name→experiment resolutions embed permission decisions: drop them.
+    s.invalidate_names();
+    Ok(Json(v))
 }

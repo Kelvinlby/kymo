@@ -48,79 +48,168 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for OptJsonBody<T> {
     }
 }
 
+/// Caller's role on a project. Ordered: viewer < editor < admin < owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    Viewer,
+    Editor,
+    Admin,
+    Owner,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Viewer => "viewer",
+            Role::Editor => "editor",
+            Role::Admin => "admin",
+            Role::Owner => "owner",
+        }
+    }
+    /// Parse a *share* role (only viewer/editor can be granted).
+    pub fn parse_share(s: &str) -> Option<Role> {
+        match s {
+            "viewer" => Some(Role::Viewer),
+            "editor" => Some(Role::Editor),
+            _ => None,
+        }
+    }
+    /// Read + edit/delete experiments + ingest.
+    pub fn can_edit(self) -> bool {
+        self >= Role::Editor
+    }
+    /// Rename/delete the project, change its sharing.
+    pub fn can_manage(self) -> bool {
+        self >= Role::Admin
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProjectRow {
     pub id: i64,
     pub owner_id: i64,
     pub owner_username: String,
+    pub owner_display_name: String,
     pub name: String,
     pub description: String,
-    pub shared: bool,
+    pub everyone: Option<String>,
     pub created_at: i64,
+    /// The caller's explicit member role, if any.
+    pub member_role: Option<String>,
+    pub member_count: i64,
+    pub experiment_count: i64,
+    pub running_count: i64,
+    pub last_activity: Option<i64>,
 }
 
-pub const PROJECT_COLS: &str = "p.id, p.owner_id, u.username, p.name, p.description, p.shared, p.created_at";
+const PROJECT_BASE: &str = "p.id, p.owner_id, u.username, u.display_name, p.name, p.description, p.everyone, p.created_at,
+    (SELECT role FROM project_members m WHERE m.project_id=p.id AND m.user_id=:uid)";
+
+/// Full project select (with stats); bind `:uid` = caller id. Append WHERE/ORDER.
+pub fn project_select() -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        format!(
+            "SELECT {PROJECT_BASE},
+                (SELECT count(*) FROM project_members m WHERE m.project_id=p.id),
+                (SELECT count(*) FROM experiments e WHERE e.project_id=p.id),
+                (SELECT count(*) FROM experiments e WHERE e.project_id=p.id AND e.status='running'),
+                (SELECT max(updated_at) FROM experiments e WHERE e.project_id=p.id)
+             FROM projects p JOIN users u ON u.id=p.owner_id"
+        )
+    })
+}
 
 pub fn project_from_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
+    let n = r.as_ref().column_count();
+    let opt = |i: usize| -> rusqlite::Result<i64> { if i < n { r.get(i) } else { Ok(0) } };
     Ok(ProjectRow {
         id: r.get(0)?,
         owner_id: r.get(1)?,
         owner_username: r.get(2)?,
-        name: r.get(3)?,
-        description: r.get(4)?,
-        shared: r.get(5)?,
-        created_at: r.get(6)?,
+        owner_display_name: r.get(3)?,
+        name: r.get(4)?,
+        description: r.get(5)?,
+        everyone: r.get(6)?,
+        created_at: r.get(7)?,
+        member_role: r.get(8)?,
+        member_count: opt(9)?,
+        experiment_count: opt(10)?,
+        running_count: opt(11)?,
+        last_activity: if 12 < n { r.get(12)? } else { None },
     })
 }
 
-pub fn load_project(c: &Connection, id: i64) -> rusqlite::Result<Option<ProjectRow>> {
-    c.prepare_cached(&format!("SELECT {PROJECT_COLS} FROM projects p JOIN users u ON u.id=p.owner_id WHERE p.id=?1"))?
-        .query_row([id], project_from_row)
+/// Project with stats, as seen by user `uid`.
+pub fn load_project(c: &Connection, id: i64, uid: i64) -> rusqlite::Result<Option<ProjectRow>> {
+    c.prepare_cached(&format!("{} WHERE p.id=:id", project_select()))?
+        .query_row(rusqlite::named_params! {":uid": uid, ":id": id}, project_from_row)
         .optional()
 }
 
-pub fn can_read(p: &Principal, proj: &ProjectRow) -> bool {
-    p.user.is_admin || proj.owner_id == p.user.id || proj.shared
+/// Project without stats (permission checks on hot-ish paths).
+pub fn load_project_acl(c: &Connection, id: i64, uid: i64) -> rusqlite::Result<Option<ProjectRow>> {
+    c.prepare_cached(&format!("SELECT {PROJECT_BASE} FROM projects p JOIN users u ON u.id=p.owner_id WHERE p.id=:id"))?
+        .query_row(rusqlite::named_params! {":uid": uid, ":id": id}, project_from_row)
+        .optional()
 }
 
-pub fn can_write(p: &Principal, proj: &ProjectRow) -> bool {
-    p.user.is_admin || proj.owner_id == p.user.id
+/// The caller's effective role: owner > admin > max(member role, everyone role).
+pub fn role_of(p: &Principal, pr: &ProjectRow) -> Option<Role> {
+    if pr.owner_id == p.user.id {
+        return Some(Role::Owner);
+    }
+    if p.user.is_admin {
+        return Some(Role::Admin);
+    }
+    let m = pr.member_role.as_deref().and_then(Role::parse_share);
+    let e = pr.everyone.as_deref().and_then(Role::parse_share);
+    m.max(e)
+}
+
+fn check_role(p: &Principal, pr: ProjectRow, need: Role) -> ApiResult<(ProjectRow, Role)> {
+    match role_of(p, &pr) {
+        Some(r) if r >= need || (need == Role::Admin && r.can_manage()) => Ok((pr, r)),
+        Some(_) if need == Role::Editor => Err(ApiError::forbidden("project is read-only for you")),
+        Some(_) => Err(ApiError::forbidden("only the project owner or the admin can do this")),
+        None => Err(ApiError::not_found("project")),
+    }
 }
 
 /// Project readable by `p`, else 404 (existence is not leaked).
-pub fn readable_project(c: &Connection, p: &Principal, id: i64) -> ApiResult<ProjectRow> {
-    match load_project(c, id)? {
-        Some(pr) if can_read(p, &pr) => Ok(pr),
-        _ => Err(ApiError::not_found("project")),
-    }
+pub fn readable_project(c: &Connection, p: &Principal, id: i64) -> ApiResult<(ProjectRow, Role)> {
+    let pr = load_project(c, id, p.user.id)?.ok_or_else(|| ApiError::not_found("project"))?;
+    check_role(p, pr, Role::Viewer)
 }
 
-pub fn writable_project(c: &Connection, p: &Principal, id: i64) -> ApiResult<ProjectRow> {
-    match load_project(c, id)? {
-        Some(pr) if can_write(p, &pr) => Ok(pr),
-        Some(pr) if can_read(p, &pr) => Err(ApiError::forbidden("project is read-only for you")),
-        _ => Err(ApiError::not_found("project")),
-    }
+/// Owner/admin only (rename, delete, sharing).
+pub fn managed_project(c: &Connection, p: &Principal, id: i64) -> ApiResult<(ProjectRow, Role)> {
+    let pr = load_project(c, id, p.user.id)?.ok_or_else(|| ApiError::not_found("project"))?;
+    check_role(p, pr, Role::Admin)
 }
 
-/// Project of an experiment, checked for read access.
-pub fn experiment_project(c: &Connection, p: &Principal, exp_id: i64, write: bool) -> ApiResult<ProjectRow> {
+/// Project of an experiment, checked for read (`edit=false`) or editor (`edit=true`) access.
+pub fn experiment_project(c: &Connection, p: &Principal, exp_id: i64, edit: bool) -> ApiResult<(ProjectRow, Role)> {
     let pid: Option<i64> = c
         .prepare_cached("SELECT project_id FROM experiments WHERE id=?1")?
         .query_row([exp_id], |r| r.get(0))
         .optional()?;
     let Some(pid) = pid else { return Err(ApiError::not_found("experiment")) };
-    let r = if write { writable_project(c, p, pid) } else { readable_project(c, p, pid) };
-    r.map_err(|e| if e.code == "not_found" { ApiError::not_found("experiment") } else { e })
+    let pr = load_project_acl(c, pid, p.user.id)?.ok_or_else(|| ApiError::not_found("experiment"))?;
+    check_role(p, pr, if edit { Role::Editor } else { Role::Viewer })
+        .map_err(|e| if e.code == "not_found" { ApiError::not_found("experiment") } else { e })
 }
 
-pub fn project_json(p: &ProjectRow, experiment_count: i64, last_activity: Option<i64>) -> Value {
+pub fn project_json(p: &ProjectRow, role: Role) -> Value {
     json!({
-        "id": p.id, "name": p.name, "description": p.description, "shared": p.shared,
-        "owner": {"id": p.owner_id, "username": p.owner_username},
+        "id": p.id, "name": p.name, "description": p.description,
+        "everyone": p.everyone, "shared": p.everyone.is_some(),
+        "member_count": p.member_count, "role": role.as_str(),
+        "owner": {"id": p.owner_id, "username": p.owner_username, "display_name": p.owner_display_name},
         "created_at": rfc3339(p.created_at),
-        "experiment_count": experiment_count,
-        "last_activity": rfc3339(last_activity.unwrap_or(p.created_at).max(p.created_at)),
+        "experiment_count": p.experiment_count,
+        "running_count": p.running_count,
+        "last_activity": rfc3339(p.last_activity.unwrap_or(p.created_at).max(p.created_at)),
     })
 }
 

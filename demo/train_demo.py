@@ -49,7 +49,7 @@ while True:
         loss += 0.002 * (step - a.diverge) ** 1.3
     m = {"train": {"loss": loss, "lr": lr, "grad_norm": abs(rng.gauss(0.8, 0.15)) * (8 if spike else 1) + 4 * math.exp(-10 * t)},
          "perf": {"tokens_per_sec": 2.1e6 * (1 + 0.02 * rng.gauss(0, 1)), "mfu": 0.52 + 0.01 * rng.gauss(0, 1),
-                  "gpu_mem_gb": 71.3 + 0.2 * rng.random()}}
+                  "mem_gb": 71.3 + 0.2 * rng.random()}}
     if a.vision:
         m["train"]["top1"] = min(0.99, (1 - math.exp(-5 * t)) * 0.88 * quality + 0.005 * rng.gauss(0, 1))
     for layer in (0, 10, 20, 40, 60, 79):

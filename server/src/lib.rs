@@ -151,6 +151,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/projects", get(p::list).post(p::create))
         .route("/projects/{id}", get(p::get_one).patch(p::patch).delete(p::delete))
         .route("/projects/{id}/experiments", get(p::experiments))
+        .route("/projects/{id}/sharing", get(p::sharing_get).put(p::sharing_put))
+        .route("/users", get(p::users_directory))
         .route("/projects/{id}/metric-keys", get(p::metric_keys))
         .route("/experiments/{id}", get(p::experiment_get).patch(p::experiment_patch).delete(p::experiment_delete))
         .route("/experiments/{id}/metrics", get(p::experiment_metrics))

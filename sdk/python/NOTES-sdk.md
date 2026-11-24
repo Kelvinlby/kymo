@@ -4,7 +4,7 @@
 
 | path | what it does |
 |---|---|
-| `src/kymo/__init__.py` | public API: `init`, `log`, `flush`, `finish`. Also the atexit hook, chained excepthook, fork handler and rank gating. |
+| `src/kymo/__init__.py` | public API: `init`, `log`, `flush`, `finish`. Also the atexit hook, chained excepthook, fork handler and the `enabled=` switch. |
 | `src/kymo/_run.py` | `Run` (hot-path `log()`, plus the `kymo-collector` thread that converts and batches) and `NoopRun` |
 | `src/kymo/_sender.py` | `Batch`, the memory-capped `Outbox`, and the `kymo-sender` thread (retry, backoff, 413 split, spool replay) |
 | `src/kymo/_transport.py` | keep-alive `http.client` connection, proxy resolution, CONNECT tunnel, proxy basic auth |
@@ -17,7 +17,7 @@
 ## Data flow
 
 1. **Training thread.** `run.log(d, step)` runs `self._push((step, time(), d.copy()))`, where `_push` is the bound `deque.append`. Nothing else happens there. When the run finishes, or in a forked child, `_push` is swapped for a no-op, so the hot path has no flag checks.
-2. **`kymo-collector`.** Every 50 ms it drains the deque. For each entry it flattens the dict, calls `.item()` on duck-typed scalars, converts values and validates keys, then appends a point to the current batch. A batch is closed at `flush_interval` (1 s), at `max_batch_points` (10 000 points) or at 250 000 values. Closing a batch JSON-encodes it, gzips it if it is over 4 KiB, and puts it into the outbox. The collector calls `sleep(0)` every 512 entries to release the GIL. `flush()` and `finish()` only *ask* the collector to drain, so `.item()` never runs on the caller's thread.
+2. **`kymo-collector`.** Every 50 ms it drains the deque. For each entry it flattens the dict, converts values generically (plain numbers and bools, then `.item()` returning a number, then `__float__`) and validates keys, then appends a point to the current batch. A batch is closed at `flush_interval` (1 s), at `max_batch_points` (10 000 points) or at 250 000 values. Closing a batch JSON-encodes it, gzips it if it is over 4 KiB, and puts it into the outbox. The collector calls `sleep(0)` every 512 entries to release the GIL. `flush()` and `finish()` only *ask* the collector to drain, so `.item()` / `__float__` never run on the caller's thread.
 3. **Outbox.** A FIFO of encoded batches, capped at `max_memory_bytes` of wire bytes. Batches that overflow the cap go to the spool.
 4. **`kymo-sender`.**
    * Posts batches one at a time over a single keep-alive connection.
@@ -79,6 +79,8 @@ All of these are backward compatible.
 
 ### Init defaults and validation
 
+* **Multi-process: no launcher detection.** No environment variables are inspected to decide who logs; every process that calls `init()` logs. `kymo.init(..., enabled=False)` returns a `NoopRun`. There is no per-process key prefix (updated SPEC §5).
+
 11. **No API key.** If no key is found, kymo warns and runs **offline**, so data goes to the spool instead of being rejected with 401 and lost. An invalid `KYMO_HOST` also forces offline mode.
 12. **Bad names.** Invalid project names are sanitized (characters outside `[A-Za-z0-9_.-]` become `-`, truncated to 64) with a warning instead of raising. A job that has waited hours in a queue should not die on a typo.
 13. **Experiment name.** `experiment` is optional and defaults to `<hostname>-<YYYYmmdd-HHMMSS>`. Names are truncated to 128 characters.
@@ -97,10 +99,10 @@ All of these are backward compatible.
 17. **API additions.**
     * `run.flush(timeout) -> bool` and `kymo.flush()` block until everything logged so far is acknowledged.
     * `log()` after `finish()` is a silent no-op.
-    * `step` may be a 0-d tensor; it is converted on the background thread.
+    * `step` may be any object with `.item()` or `__int__`; it is converted on the background thread.
 18. **Value conversion.**
     * Ints outside the i64 range are sent as floats.
-    * `Fraction`, `Decimal` and numpy float/int subclasses are accepted.
+    * Subclasses of `int`/`float`, objects whose `.item()` returns a number, and anything with `__float__` (`Fraction`, `Decimal`, ...) are accepted. The SDK imports and names no third-party library.
     * Values in `config` that are not finite are encoded as `"NaN"` / `"Infinity"` strings, and objects that can't be serialized are encoded with `str()`.
 
 ### Known limits

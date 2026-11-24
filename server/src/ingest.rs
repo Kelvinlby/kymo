@@ -9,6 +9,8 @@ pub struct PVal<'de> {
     pub step: i64,
     pub ts: f64,
     pub value: f64,
+    /// Index of the point this value came from (for server-assigned steps).
+    pub point: u32,
 }
 
 #[derive(Default)]
@@ -20,8 +22,52 @@ pub struct Parsed<'de> {
     pub host: Option<Cow<'de, str>>,
     pub values: Vec<PVal<'de>>,
     pub dropped: usize,
+    /// Up to MAX_DROPPED_KEYS distinct example keys of dropped values.
+    pub dropped_keys: Vec<String>,
+    /// Explicit step of every point, in request order (`None` = server assigns).
+    pub point_steps: Vec<Option<i64>>,
+    /// True when at least one point has no `step`.
+    pub auto_steps: bool,
     pub now_ts: f64,
     pub max_values: usize,
+}
+
+pub const MAX_DROPPED_KEYS: usize = 20;
+const MAX_DEPTH: u32 = 16;
+
+/// Where parsed values go (shared by all seeds).
+struct Sink<'a, 'de> {
+    out: &'a mut Vec<PVal<'de>>,
+    dropped: &'a mut usize,
+    dropped_keys: &'a mut Vec<String>,
+    max: usize,
+    point: u32,
+}
+
+impl<'de> Sink<'_, 'de> {
+    #[inline]
+    fn push<E: de::Error>(&mut self, key: Cow<'de, str>, value: f64) -> Result<(), E> {
+        if !crate::util::valid_metric_key(&key) {
+            self.drop_key(&key);
+            return Ok(());
+        }
+        if self.out.len() >= self.max {
+            return Err(E::custom(TOO_MANY));
+        }
+        self.out.push(PVal { key, step: 0, ts: 0.0, value, point: self.point });
+        Ok(())
+    }
+    #[cold]
+    fn drop_key(&mut self, key: &str) {
+        *self.dropped += 1;
+        if self.dropped_keys.len() < MAX_DROPPED_KEYS && !self.dropped_keys.iter().any(|k| k == key) {
+            let mut k: String = key.chars().take(256).collect();
+            if k.is_empty() {
+                k = "(empty key)".into();
+            }
+            self.dropped_keys.push(k);
+        }
+    }
 }
 
 pub const TOO_MANY: &str = "kymo:too_many_values";
@@ -145,106 +191,182 @@ impl<'de> de::Deserialize<'de> for Ts {
     }
 }
 
-struct MetricsSeed<'a, 'de> {
-    out: &'a mut Vec<PVal<'de>>,
-    dropped: &'a mut usize,
-    max: usize,
+/// One metric value under `key`: number/bool/"NaN"/"Infinity"/"-Infinity" are kept, nested objects are
+/// flattened with `/`, anything else is dropped.
+struct ValueSeed<'s, 'a, 'de> {
+    key: Cow<'de, str>,
+    sink: &'s mut Sink<'a, 'de>,
+    depth: u32,
 }
 
-impl<'de> DeserializeSeed<'de> for MetricsSeed<'_, 'de> {
+impl<'de> DeserializeSeed<'de> for ValueSeed<'_, '_, 'de> {
+    type Value = ();
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for ValueSeed<'_, '_, 'de> {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a metric value")
+    }
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<(), E> {
+        self.sink.push(self.key, v)
+    }
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<(), E> {
+        self.sink.push(self.key, v as f64)
+    }
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<(), E> {
+        self.sink.push(self.key, v as f64)
+    }
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<(), E> {
+        self.sink.push(self.key, if v { 1.0 } else { 0.0 })
+    }
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<(), E> {
+        match v {
+            "NaN" | "nan" => self.sink.push(self.key, f64::NAN),
+            "Infinity" | "+Infinity" | "inf" => self.sink.push(self.key, f64::INFINITY),
+            "-Infinity" | "-inf" => self.sink.push(self.key, f64::NEG_INFINITY),
+            _ => {
+                self.sink.drop_key(&self.key);
+                Ok(())
+            }
+        }
+    }
+    fn visit_unit<E>(self) -> Result<(), E> {
+        self.sink.drop_key(&self.key);
+        Ok(())
+    }
+    fn visit_none<E>(self) -> Result<(), E> {
+        self.sink.drop_key(&self.key);
+        Ok(())
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut s: A) -> Result<(), A::Error> {
+        while s.next_element::<IgnoredAny>()?.is_some() {}
+        self.sink.drop_key(&self.key);
+        Ok(())
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<(), A::Error> {
+        if self.depth >= MAX_DEPTH {
+            while m.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            self.sink.drop_key(&self.key);
+            return Ok(());
+        }
+        while let Some(BStr(k)) = m.next_key::<BStr<'de>>()? {
+            let key = Cow::Owned(format!("{}/{}", self.key, k));
+            m.next_value_seed(ValueSeed { key, sink: &mut *self.sink, depth: self.depth + 1 })?;
+        }
+        Ok(())
+    }
+}
+
+struct MetricsSeed<'s, 'a, 'de>(&'s mut Sink<'a, 'de>);
+
+impl<'de> DeserializeSeed<'de> for MetricsSeed<'_, '_, 'de> {
     type Value = ();
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
         d.deserialize_map(self)
     }
 }
 
-impl<'de> Visitor<'de> for MetricsSeed<'_, 'de> {
+impl<'de> Visitor<'de> for MetricsSeed<'_, '_, 'de> {
     type Value = ();
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("a metrics object")
     }
     fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<(), A::Error> {
         while let Some(BStr(key)) = m.next_key::<BStr<'de>>()? {
-            let MVal(v) = m.next_value::<MVal>()?;
-            match v {
-                Some(value) if crate::util::valid_metric_key(&key) => {
-                    if self.out.len() >= self.max {
-                        return Err(de::Error::custom(TOO_MANY));
-                    }
-                    self.out.push(PVal { key, step: 0, ts: 0.0, value });
-                }
-                _ => *self.dropped += 1,
-            }
+            m.next_value_seed(ValueSeed { key, sink: &mut *self.0, depth: 1 })?;
         }
         Ok(())
     }
 }
 
-struct PointSeed<'a, 'de> {
-    out: &'a mut Vec<PVal<'de>>,
-    dropped: &'a mut usize,
-    max: usize,
+struct PointSeed<'s, 'a, 'de> {
+    sink: &'s mut Sink<'a, 'de>,
+    point_steps: &'s mut Vec<Option<i64>>,
+    auto: &'s mut bool,
     now_ts: f64,
 }
 
-impl<'de> DeserializeSeed<'de> for PointSeed<'_, 'de> {
+impl<'de> DeserializeSeed<'de> for PointSeed<'_, '_, 'de> {
     type Value = ();
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
         d.deserialize_map(self)
     }
 }
 
-impl<'de> Visitor<'de> for PointSeed<'_, 'de> {
+impl<'de> Visitor<'de> for PointSeed<'_, '_, 'de> {
     type Value = ();
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a point object {step, ts, metrics}")
+        f.write_str("a point object {step?, ts?, metrics}")
     }
     fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<(), A::Error> {
-        let start = self.out.len();
+        let start = self.sink.out.len();
+        let pi = self.point_steps.len();
+        if pi >= u32::MAX as usize {
+            return Err(de::Error::custom(TOO_MANY));
+        }
+        self.sink.point = pi as u32;
+        self.point_steps.push(None);
         let mut step = None;
         let mut ts = None;
         while let Some(BStr(k)) = m.next_key::<BStr<'de>>()? {
             match &*k {
-                "step" => step = Some(m.next_value::<Step>()?.0),
+                "step" => step = m.next_value::<Option<Step>>()?.map(|s| s.0),
                 "ts" => ts = m.next_value::<Ts>()?.0,
-                "metrics" => m.next_value_seed(MetricsSeed { out: self.out, dropped: self.dropped, max: self.max })?,
+                "metrics" => m.next_value_seed(MetricsSeed(&mut *self.sink))?,
                 _ => {
                     m.next_value::<IgnoredAny>()?;
                 }
             }
         }
-        let step = step.ok_or_else(|| de::Error::custom("point without step"))?;
-        let ts = ts.unwrap_or(self.now_ts);
-        for v in &mut self.out[start..] {
-            v.step = step;
-            v.ts = ts;
+        finish_point(&mut self.sink.out[start..], step, ts.unwrap_or(self.now_ts));
+        self.point_steps[pi] = step;
+        if step.is_none() {
+            *self.auto = true;
         }
         Ok(())
     }
 }
 
-struct PointsSeed<'a, 'de> {
-    out: &'a mut Vec<PVal<'de>>,
-    dropped: &'a mut usize,
-    max: usize,
+#[inline]
+fn finish_point(vals: &mut [PVal], step: Option<i64>, ts: f64) {
+    let step = step.unwrap_or(0);
+    for v in vals {
+        v.step = step;
+        v.ts = ts;
+    }
+}
+
+struct PointsSeed<'s, 'a, 'de> {
+    sink: &'s mut Sink<'a, 'de>,
+    point_steps: &'s mut Vec<Option<i64>>,
+    auto: &'s mut bool,
     now_ts: f64,
 }
 
-impl<'de> DeserializeSeed<'de> for PointsSeed<'_, 'de> {
+impl<'de> DeserializeSeed<'de> for PointsSeed<'_, '_, 'de> {
     type Value = ();
     fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
         d.deserialize_seq(self)
     }
 }
 
-impl<'de> Visitor<'de> for PointsSeed<'_, 'de> {
+impl<'de> Visitor<'de> for PointsSeed<'_, '_, 'de> {
     type Value = ();
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("an array of points")
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut s: A) -> Result<(), A::Error> {
         while s
-            .next_element_seed(PointSeed { out: self.out, dropped: self.dropped, max: self.max, now_ts: self.now_ts })?
+            .next_element_seed(PointSeed {
+                sink: &mut *self.sink,
+                point_steps: &mut *self.point_steps,
+                auto: &mut *self.auto,
+                now_ts: self.now_ts,
+            })?
             .is_some()
         {}
         Ok(())
@@ -267,26 +389,58 @@ impl<'de> Visitor<'de> for TopSeed<'_, 'de> {
     }
     fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<(), A::Error> {
         let p = self.0;
+        let Parsed { values, dropped, dropped_keys, point_steps, auto_steps, max_values, now_ts, .. } = p;
+        let mut sink = Sink { out: values, dropped, dropped_keys, max: *max_values, point: 0 };
+        let now_ts = *now_ts;
+        // single-point shorthand: top-level metrics (+ step, ts)
+        let mut top: Option<(usize, std::ops::Range<usize>)> = None;
+        let (mut top_step, mut top_ts) = (None, None);
+        let (mut project, mut experiment, mut status, mut host, mut config) = (None, None, None, None, None);
         while let Some(BStr(k)) = m.next_key::<BStr<'de>>()? {
             match &*k {
-                "project" => p.project = Some(m.next_value::<BStr<'de>>()?.0),
-                "experiment" => p.experiment = Some(m.next_value::<BStr<'de>>()?.0),
-                "status" => p.status = m.next_value::<OptBStr<'de>>()?.0,
-                "host" => p.host = m.next_value::<OptBStr<'de>>()?.0,
+                "project" => project = Some(m.next_value::<BStr<'de>>()?.0),
+                "experiment" => experiment = Some(m.next_value::<BStr<'de>>()?.0),
+                "status" => status = m.next_value::<OptBStr<'de>>()?.0,
+                "host" => host = m.next_value::<OptBStr<'de>>()?.0,
                 "config" => {
-                    p.config = m.next_value::<Option<serde_json::Map<String, serde_json::Value>>>()?;
+                    config = m.next_value::<Option<serde_json::Map<String, serde_json::Value>>>()?;
                 }
                 "points" => m.next_value_seed(PointsSeed {
-                    out: &mut p.values,
-                    dropped: &mut p.dropped,
-                    max: p.max_values,
-                    now_ts: p.now_ts,
+                    sink: &mut sink,
+                    point_steps: &mut *point_steps,
+                    auto: &mut *auto_steps,
+                    now_ts,
                 })?,
+                "metrics" => {
+                    if top.is_some() {
+                        return Err(de::Error::custom("duplicate 'metrics'"));
+                    }
+                    let pi = point_steps.len();
+                    point_steps.push(None);
+                    sink.point = pi as u32;
+                    let start = sink.out.len();
+                    m.next_value_seed(MetricsSeed(&mut sink))?;
+                    top = Some((pi, start..sink.out.len()));
+                }
+                "step" => top_step = m.next_value::<Option<Step>>()?.map(|s| s.0),
+                "ts" => top_ts = m.next_value::<Ts>()?.0,
                 _ => {
                     m.next_value::<IgnoredAny>()?;
                 }
             }
         }
+        if let Some((pi, r)) = top {
+            finish_point(&mut sink.out[r], top_step, top_ts.unwrap_or(now_ts));
+            point_steps[pi] = top_step;
+            if top_step.is_none() {
+                *auto_steps = true;
+            }
+        }
+        p.project = project;
+        p.experiment = experiment;
+        p.status = status;
+        p.host = host;
+        p.config = config;
         Ok(())
     }
 }

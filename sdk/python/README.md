@@ -1,11 +1,11 @@
 # kymo — Python SDK
 
-Logs training metrics to a [Kymo](../../SPEC.md) server without ever slowing down or crashing your training loop.
+You hand kymo a dict of numbers and it gets them to a [Kymo](../../SPEC.md) server, without slowing down or crashing the loop that produced them.
 
 * `run.log()` costs well under a microsecond: it shallow-copies your dict and appends it to a deque. Nothing else happens on your thread.
-* Tensor `.item()` calls, flattening, JSON, gzip, HTTP, retries and the disk spool all run on background daemon threads.
+* Flattening, value conversion, JSON, gzip, HTTP, retries and the disk spool all run on background daemon threads.
 * Nothing in this package raises into your code. Problems are reported as warnings on the `kymo` logger.
-* There are no runtime dependencies (stdlib only), and it needs Python ≥ 3.9.
+* There are no runtime dependencies (stdlib only), and it needs Python ≥ 3.9. kymo works with any framework, because it doesn't know about any of them.
 
 ```bash
 pip install ./sdk/python        # or: uv pip install ./sdk/python
@@ -18,60 +18,71 @@ export KYMO_API_KEY=kymo_...    # create one in the web UI: Settings → API tok
 ```python
 import kymo
 
-run = kymo.init(project="llm-pretrain", experiment="7b-lr3e-4", config={"lr": 3e-4, "model": {"d": 4096}})
+run = kymo.init(project="llm-pretrain", experiment="lr3e-4", config={"lr": 3e-4, "model": {"d": 4096}})
 for step in range(1000):
-    run.log({"train/loss": 2.3, "lr": 3e-4, "eval": {"acc": 0.71}}, step=step)   # eval/acc
+    loss = 2.3 / (step + 1)
+    run.log({"train/loss": loss, "lr": 3e-4, "eval": {"acc": 0.71, "loss": 2.4}}, step=step)
 run.finish()   # optional: also done automatically at exit
 ```
 
-* If you leave out `step`, it auto-increments (one past the previous step).
-* Nested dicts are flattened with `/`.
-* Values can be ints, floats, bools (sent as 0/1), NaN/±Inf, or anything with a scalar `.item()` (torch / JAX / numpy).
-* Strings and other non-numeric values are dropped, with one warning per key.
-* Module-level shortcuts act on the most recent run: `kymo.log(...)`, `kymo.flush()`, `kymo.finish()`.
-* You can use the run as a context manager: `with kymo.init(...) as run:` marks it `failed` if the block raises.
+* **Keys.** Nested dicts become `/`-separated keys: the dict above logs `train/loss`, `lr`, `eval/acc` and `eval/loss`. The UI groups keys by the part before the first `/`.
+* **Values.**
+  * Accepted:
+    * ints and floats
+    * bools, sent as 0/1
+    * NaN and ±Inf, sent as `"NaN"` / `"Infinity"` / `"-Infinity"`
+    * any object whose `.item()` returns a number
+    * any object with `__float__`
+  * Conversion happens later, on the background thread, so a value that is slow to read never blocks you.
+  * Strings, `None` and other non-numeric values are dropped, with one warning per key.
+* **`step`** is optional. If you leave it out, it auto-increments (one past the previous step).
+* **`config`** is any JSON-like dict. It is sent once at `init` and shallow-merged into the experiment's config on the server.
+* **Shortcuts.** Module-level `kymo.log(...)`, `kymo.flush()` and `kymo.finish()` act on the most recent run.
+* **Context manager.** `with kymo.init(...) as run:` marks the run `failed` if the block raises. Otherwise, at exit the run is marked `finished`, or `failed` when the interpreter exits because of an uncaught exception.
 
-### Minimal PyTorch loop
+### Logging from just one process
+
+Every process that calls `kymo.init` logs. kymo does not inspect any launcher environment variables. When several workers run the same script, decide yourself who logs:
 
 ```python
-import torch, kymo
-
-model = torch.nn.Linear(10, 1).cuda()
-opt = torch.optim.AdamW(model.parameters(), lr=3e-4)
-run = kymo.init(project="demo", experiment="linear-adamw", config={"lr": 3e-4, "batch": 64})
-
-for step in range(10_000):
-    x = torch.randn(64, 10, device="cuda")
-    loss = model(x).pow(2).mean()
-    opt.zero_grad(set_to_none=True)
-    loss.backward()
-    gn = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    opt.step()
-    # Pass the tensors themselves: no .item() here, so no GPU sync in the training loop.
-    # kymo calls .item() later on its background thread.
-    run.log({"train/loss": loss.detach(), "train/grad_norm": gn, "lr": opt.param_groups[0]["lr"]}, step=step)
+run = kymo.init(project="p", experiment="e", enabled=(worker_id == 0))
+run.log({"loss": 1.2})   # a no-op on the other workers; no `if` needed around each call
 ```
 
-Pass `loss.detach()`, not `loss`, so the autograd graph isn't kept alive until the background thread converts it.
+To log from every worker, give each one its own experiment name or key prefix, e.g. `{f"worker{worker_id}/loss": ...}`.
 
-### Distributed training
+After `os.fork()` the child's inherited runs turn into no-ops. The child can call `kymo.init` again to start its own run.
 
-By default only global rank 0 logs. The rank is read from `RANK`, falling back to `SLURM_PROCID`, then `OMPI_COMM_WORLD_RANK`; unset counts as rank 0. Other ranks get a no-op run, so you can call `kymo.init` and `run.log` everywhere without `if rank == 0` guards. `kymo.init(..., all_ranks=True)` logs from every rank, prefixing keys with `rank{N}/`.
+## Offline use and the disk spool
 
-### When the server is unreachable
-
-* Network errors, 429 and 5xx are retried with exponential backoff and full jitter (0.5 s doubling to a 60 s cap), honoring `Retry-After`.
-* 400/401/403 are never retried: kymo logs one warning and drops the batch.
-* On 413 the batch is split in half and resent.
-* Unsent batches stay in memory up to `max_memory_bytes` (256 MiB by default); after that they spill to the disk spool.
-* At exit, kymo flushes for up to `KYMO_EXIT_TIMEOUT` seconds, then writes whatever is left to the spool.
-* Spooled files are replayed automatically by the next run that uses the same host and token. You can also replay them by hand:
+* **Retries.** Network errors, 429 and 5xx are retried with exponential backoff and full jitter (0.5 s doubling to a 60 s cap), honoring `Retry-After`.
+* **No retry.** 400/401/403 are never retried: kymo logs one warning and drops the batch.
+* **413.** The batch is split in half and resent.
+* **Memory, then disk.** Unsent batches stay in memory up to `max_memory_bytes` (256 MiB by default). Beyond that, they spill to the spool directory (`KYMO_CACHE_DIR`).
+* **Exit.** kymo flushes for up to `KYMO_EXIT_TIMEOUT` seconds, then writes whatever is left to the spool.
+* **Replay.** Spooled files are replayed automatically by the next run that uses the same host and token. Replays are idempotent, because the server upserts by `(key, step)`.
 
 ```bash
-python -m kymo sync             # uses KYMO_HOST / KYMO_API_KEY; --dry-run lists files, --all-hosts, --dir
+python -m kymo sync             # replay the spool now (uses KYMO_HOST / KYMO_API_KEY)
+python -m kymo sync --dry-run   # just list what would be sent; also --dir, --all-hosts, --host, --api-key
 ```
 
-Offline clusters: set `KYMO_OFFLINE=1` to write everything to the spool, then run `python -m kymo sync` from a machine that can reach the server. Make sure `KYMO_CACHE_DIR` points to the spool directory on that machine.
+On a machine without network access, set `KYMO_OFFLINE=1`; everything goes to the spool. Later, copy the spool directory to a machine that can reach the server and run `python -m kymo sync` there, with `KYMO_CACHE_DIR` pointing at the copy. Without an API key, kymo also runs offline instead of losing data.
+
+## Proxies
+
+Proxy settings come from `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`, in upper or lower case. kymo uses the same rules as `urllib.request.getproxies()` and `proxy_bypass()`; `ALL_PROXY` is used as a fallback.
+
+* **Plain http:** requests go through the proxy with an absolute-URI request line.
+* **https:** kymo opens a `CONNECT` tunnel. TLS runs end to end, and the certificate is verified against the real server name.
+* **Credentials:** `http://user:pass@proxy:3128` is sent as `Proxy-Authorization: Basic`. Percent-encode special characters, e.g. `@` → `%40`.
+* **Connections:** both modes keep the connection alive between batches.
+* **SOCKS:** SOCKS proxies are not supported. kymo connects directly and logs a warning.
+
+```bash
+export HTTPS_PROXY=http://alice:s3cr%40t@proxy.corp:3128
+export NO_PROXY=localhost,127.0.0.1,.internal
+```
 
 ## Configuration
 
@@ -85,25 +96,41 @@ Offline clusters: set `KYMO_OFFLINE=1` to write everything to the spool, then ru
 | `KYMO_EXIT_TIMEOUT` | `30` | seconds to flush at exit before spooling the rest |
 | `KYMO_HTTP_TIMEOUT` | `60` | socket read timeout per request (the connect timeout is 10 s) |
 | `KYMO_CA_BUNDLE` | – | CA file for https (`SSL_CERT_FILE` also works) |
-| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | – | proxies, upper or lower case, same semantics as `urllib` (see below) |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` | – | proxies (see above) |
 
-`kymo.init` keyword arguments are `project`, `experiment`, `config`, `api_key`, `host`, `all_ranks`, `offline`, `flush_interval` (1.0 s), `max_batch_points` (10 000) and `max_memory_bytes` (256 MiB).
+`kymo.init` takes these keyword arguments:
 
-### Proxies
+* `project` and `experiment` (if `experiment` is omitted, it defaults to `<hostname>-<timestamp>`)
+* `config`, `api_key`, `host`
+* `enabled` (default `True`)
+* `offline`
+* `flush_interval` (default 1.0 s)
+* `max_batch_points` (default 10 000)
+* `max_memory_bytes` (default 256 MiB)
 
-Proxy settings follow `urllib.request.getproxies()` and `proxy_bypass()`; `ALL_PROXY` is used as a fallback.
+`log()` takes a *shallow* copy. If you mutate a nested dict right after logging it, the background thread may see the new values.
 
-* **Plain http:** requests go through the proxy with an absolute-URI request line.
-* **https:** kymo opens a `CONNECT` tunnel. TLS runs end to end, and the certificate is verified against the real server name.
-* **Credentials:** `http://user:pass@proxy:3128` is sent as `Proxy-Authorization: Basic`. Percent-encode special characters, e.g. `@` → `%40`.
-* **Connections:** both modes keep the connection alive between batches.
-* **SOCKS:** SOCKS proxies are not supported. kymo connects directly and logs a warning.
+## No SDK needed
 
-### Other behavior
+The SDK is a convenience. Anything that can send an HTTP POST can log to the ingest endpoint directly. The single-point shorthand puts `metrics` at the top level. `step` is optional; if you leave it out, the server assigns the next step for that experiment.
 
-* **Fork safety:** after `os.fork()` the child's inherited runs turn into no-ops. The child can call `kymo.init` again to start its own run.
-* **Run status:** at exit the run is marked `finished`, or `failed` if the interpreter is exiting because of an uncaught exception. kymo detects that through a chained `sys.excepthook`, and any hook you installed earlier still runs.
-* **Nested dicts:** `log()` takes a *shallow* copy. If you mutate a nested dict right after logging it, the background thread may see the new values.
+```bash
+curl -sS https://kymo.example.com/api/v1/ingest \
+  -H "Authorization: Bearer $KYMO_API_KEY" -H "Content-Type: application/json" \
+  -d '{"project":"p","experiment":"e","metrics":{"loss":1.2}}'
+```
+
+The full form sends many points per request, along with optional config and status:
+
+```bash
+curl -sS https://kymo.example.com/api/v1/ingest \
+  -H "Authorization: Bearer $KYMO_API_KEY" -H "Content-Type: application/json" \
+  -d '{"project":"p","experiment":"e","config":{"lr":0.0003},"status":"running",
+       "points":[{"step":1,"ts":1732400000.1,"metrics":{"train/loss":2.31,"lr":0.0003}},
+                 {"step":2,"metrics":{"train/loss":2.12,"grad_norm":"NaN"}}]}'
+```
+
+The project and experiment are created automatically. Values are JSON numbers, with `"NaN"` / `"Infinity"` / `"-Infinity"` as strings. You can also gzip the body and send `Content-Encoding: gzip`. A 200 response means the data is durably stored. See SPEC §3 for the details.
 
 ## Development
 
