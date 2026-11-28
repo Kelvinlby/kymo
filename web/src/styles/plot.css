@@ -150,6 +150,8 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   grid-auto-rows: minmax(var(--row-h), auto);
+  /* wide or tall cards would leave holes; later cards move up to fill them */
+  grid-auto-flow: row dense;
   gap: var(--s-3);
 }
 .panel-grid.cols-1 {
