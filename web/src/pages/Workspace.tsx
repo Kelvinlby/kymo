@@ -317,6 +317,8 @@ export function Workspace({ projectId }: { projectId: number }) {
               toggle={grid.toggle}
               pins={grid.pins}
               togglePin={grid.togglePin}
+              sizes={grid.sizes}
+              setSize={grid.setSize}
               layout={layout}
               onClearFilter={() => grid.setFilter('')}
             />

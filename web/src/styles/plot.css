@@ -145,8 +145,11 @@
   padding: 4px 0 var(--s-4);
 }
 .panel-grid {
+  /* one slot: card head (40px) + chart (236px); cards span whole slots, the chart fills the rest */
+  --row-h: 276px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-auto-rows: minmax(var(--row-h), auto);
   gap: var(--s-3);
 }
 .panel-grid.cols-1 {
@@ -158,8 +161,126 @@
 .panel-grid.cols-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-.panel-grid.cols-1 .panel-plot {
-  height: 320px;
+.panel-grid.cols-1 {
+  --row-h: 360px;
+}
+.grid-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.grid-item > .panel {
+  flex: 1;
+}
+.grid-item .panel-plot {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 236px;
+}
+.grid-item.resizing > .panel {
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 2px var(--accent);
+}
+.resize-handle {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  touch-action: none;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.resize-handle.nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.resize-handle.ne {
+  right: 0;
+  top: 0;
+  cursor: nesw-resize;
+}
+.resize-handle.sw {
+  left: 0;
+  bottom: 0;
+  cursor: nesw-resize;
+}
+.resize-handle.se {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+/* an L-shaped tick hugging each corner */
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border: 0 solid var(--text-3);
+}
+.resize-handle.nw::after {
+  left: 3px;
+  top: 3px;
+  border-width: 2px 0 0 2px;
+  border-top-left-radius: 4px;
+}
+.resize-handle.ne::after {
+  right: 3px;
+  top: 3px;
+  border-width: 2px 2px 0 0;
+  border-top-right-radius: 4px;
+}
+.resize-handle.sw::after {
+  left: 3px;
+  bottom: 3px;
+  border-width: 0 0 2px 2px;
+  border-bottom-left-radius: 4px;
+}
+.resize-handle.se::after {
+  right: 3px;
+  bottom: 3px;
+  border-width: 0 2px 2px 0;
+  border-bottom-right-radius: 4px;
+}
+.resize-handle:hover::after,
+.grid-item.resizing .resize-handle::after {
+  border-color: var(--accent);
+}
+.grid-item:hover .resize-handle,
+.grid-item.resizing .resize-handle {
+  opacity: 1;
+}
+@media (hover: none) {
+  .resize-handle {
+    opacity: 0.6;
+  }
+}
+.resize-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: 600 11px/18px var(--mono);
+  pointer-events: none;
+}
+.resizing-card,
+.resizing-card * {
+  user-select: none !important;
+}
+.resize-nwse,
+.resize-nwse * {
+  cursor: nwse-resize !important;
+}
+.resize-nesw,
+.resize-nesw * {
+  cursor: nesw-resize !important;
 }
 
 /* ============================================================ chart card */

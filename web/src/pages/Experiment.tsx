@@ -263,6 +263,8 @@ export function ExperimentPage({ experimentId }: { experimentId: number }) {
             toggle={grid.toggle}
             pins={grid.pins}
             togglePin={grid.togglePin}
+            sizes={grid.sizes}
+            setSize={grid.setSize}
             layout={layout}
             onClearFilter={() => grid.setFilter('')}
           />

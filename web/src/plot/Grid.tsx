@@ -1,5 +1,5 @@
 import type { ComponentChildren, Ref } from 'preact';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { api, type MetricSummary } from '../api';
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, Columns2, Columns3, LayoutGrid, Pin, RectangleHorizontal, Search, SlidersHorizontal, WavesHorizontal } from '../components/icons';
 import { Button, Dialog, EmptyState, IconButton, Popover, SearchInput, Segmented, Switch, cx, type SegOption } from '../components/ui';
@@ -11,6 +11,7 @@ import type { PanelController, PanelUiState } from './controller';
 import { Panel, Range, StatsRangeLine, hoveredPanel, type StatsData } from './Panel';
 import { paletteColor } from './colors';
 import { sid, type SeriesStore } from './store';
+import { observeSize } from './visibility';
 import type { PlotSettings, RunInfo, XMode } from './types';
 
 export const DEFAULT_SETTINGS: PlotSettings = { smoothing: 0, xMode: 'step', logY: false, clipPct: 0, maxPoints: 1000 };
@@ -272,11 +273,17 @@ export function PanelGrid(props: {
   toggle: (g: string) => void;
   pins: string[];
   togglePin: (k: string) => void;
+  sizes: Record<string, CardSize>;
+  setSize: (id: string, s: CardSize | null) => void;
   layout: Layout;
   allKeys: string[];
   onClearFilter?: () => void;
 }) {
   const groups = useMemo(() => groupKeys(props.keys), [props.keys]);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const cols = useColumnCount(rootRef, props.layout);
+  const [drag, setDrag] = useState<{ id: string; size: CardSize } | null>(null);
+  const startResize = useCardResize(cols, setDrag, props.setSize);
   const [fs, setFs] = useState<string[] | null>(null);
   const openFs = useCallback((k: string) => setFs([k]), []);
   const compare = useCompareSelection(setFs);
@@ -294,26 +301,50 @@ export function PanelGrid(props: {
     })),
   );
 
-  const card = (k: string, inPinned: boolean) => (
-    <Panel
-      key={(inPinned ? 'pin:' : '') + k}
-      metricKey={k}
-      title={shortKey(k)}
-      group={inPinned ? groupOf(k) || undefined : undefined}
-      runs={props.runs}
-      settings={props.settings}
-      store={props.store}
-      syncKey={props.syncKey}
-      pinned={props.pins.includes(k)}
-      onTogglePin={props.togglePin}
-      onFullscreen={openFs}
-      compareIdx={compare.keys.indexOf(k)}
-      onCompareClick={compare.toggle}
-    />
-  );
+  const card = (k: string, inPinned: boolean) => {
+    const id = (inPinned ? 'pin:' : '') + k;
+    const [w, h] = drag?.id === id ? drag.size : props.sizes[id] || ONE;
+    return (
+      <div
+        key={id}
+        class={cx('grid-item', drag?.id === id && 'resizing')}
+        style={{ gridColumn: `span ${Math.min(w, cols)}`, gridRow: `span ${h}` }}
+      >
+        <Panel
+          metricKey={k}
+          title={shortKey(k)}
+          group={inPinned ? groupOf(k) || undefined : undefined}
+          runs={props.runs}
+          settings={props.settings}
+          store={props.store}
+          syncKey={props.syncKey}
+          pinned={props.pins.includes(k)}
+          onTogglePin={props.togglePin}
+          onFullscreen={openFs}
+          compareIdx={compare.keys.indexOf(k)}
+          onCompareClick={compare.toggle}
+        />
+        {CORNERS.map((c) => (
+          <span
+            key={c.cls}
+            class={'resize-handle ' + c.cls}
+            aria-hidden="true"
+            title="Drag to resize · double-click to reset"
+            onPointerDown={(e) => startResize(e, id, [w, h], c.sx, c.sy)}
+            onDblClick={() => props.setSize(id, null)}
+          />
+        ))}
+        {drag?.id === id && (
+          <span class="resize-badge" aria-hidden="true">
+            {Math.min(w, cols)} × {h}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   return (
-    <div class="groups">
+    <div class="groups" ref={rootRef}>
       {pinned.length > 0 && (
         <section>
           <button type="button" class={cx('group-head', props.collapsed.has('\u0000pinned') && 'collapsed')} onClick={() => props.toggle('\u0000pinned')} aria-expanded={!props.collapsed.has('\u0000pinned')}>
@@ -370,6 +401,79 @@ export function PanelGrid(props: {
         ))}
     </div>
   );
+}
+
+/** A card's size in grid slots: [columns, rows]. */
+export type CardSize = [number, number];
+const ONE: CardSize = [1, 1];
+const MAX_ROWS = 8;
+/** Narrowest column in auto layout (matches `minmax(300px, 1fr)` in plot.css). */
+const AUTO_MIN_COL = 300;
+
+/** Column count of the panel grids under `ref` (all grids on a page share its width). */
+function useColumnCount(ref: { current: HTMLElement | null }, layout: Layout): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    return observeSize(el, (w) => setWidth(w));
+  }, [ref]);
+  if (layout !== 'auto') return layout;
+  const gap = 12; // --s-3
+  return Math.max(1, Math.floor((width + gap) / (AUTO_MIN_COL + gap)));
+}
+
+/** Resize corners: horizontal and vertical direction in which dragging grows the card. */
+const CORNERS = [
+  { cls: 'nw', sx: -1, sy: -1 },
+  { cls: 'ne', sx: 1, sy: -1 },
+  { cls: 'sw', sx: -1, sy: 1 },
+  { cls: 'se', sx: 1, sy: 1 },
+] as const;
+
+/**
+ * Corner drag: the card snaps to whole slots while dragging (width bounded by the current
+ * column count) and the size is saved on release. Cards keep their order in the flow, so a
+ * left/top corner grows the card the same way; it is driven by pointer movement, not by the
+ * card's position, which changes as it reflows.
+ */
+function useCardResize(cols: number, setDrag: (d: { id: string; size: CardSize } | null) => void, save: (id: string, s: CardSize) => void) {
+  return (e: PointerEvent, id: string, start: CardSize, sx: number, sy: number) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const handle = e.currentTarget as HTMLElement;
+    const grid = handle.parentElement!.parentElement!;
+    const cs = getComputedStyle(grid);
+    const gap = parseFloat(cs.columnGap) || 0;
+    const rowH = parseFloat(cs.getPropertyValue('--row-h')) || 276;
+    const colW = (grid.clientWidth - (cols - 1) * gap) / cols;
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const w0 = Math.min(start[0], cols);
+    let size: CardSize = [w0, start[1]];
+    setDrag({ id, size });
+    handle.setPointerCapture(e.pointerId);
+    document.documentElement.classList.add('resizing-card', sx * sy > 0 ? 'resize-nwse' : 'resize-nesw');
+    const move = (ev: PointerEvent) => {
+      const w = w0 + Math.round((sx * (ev.clientX - x0)) / (colW + gap));
+      const h = start[1] + Math.round((sy * (ev.clientY - y0)) / (rowH + gap));
+      const n: CardSize = [Math.max(1, Math.min(cols, w)), Math.max(1, Math.min(MAX_ROWS, h))];
+      if (n[0] !== size[0] || n[1] !== size[1]) setDrag({ id, size: (size = n) });
+    };
+    const end = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      document.documentElement.classList.remove('resizing-card', 'resize-nwse', 'resize-nesw');
+      setDrag(null);
+      if (size[0] !== start[0] || size[1] !== start[1]) save(id, size);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  };
 }
 
 /**
@@ -541,6 +645,18 @@ export function useGridState(scope: string, allKeys: string[]) {
   const [filter, setFilterRaw] = useState<string>(() => lsGet('kymo:filter:' + scope, ''));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(lsGet<string[]>('kymo:collapsed:' + scope, [])));
   const [pins, setPins] = useState<string[]>(() => lsGet<string[]>('kymo:pins:' + scope, []));
+  const [sizes, setSizes] = useState<Record<string, CardSize>>(() => lsGet<Record<string, CardSize>>('kymo:sizes:' + scope, {}));
+  const setSize = useCallback(
+    (id: string, sz: CardSize | null) =>
+      setSizes((m) => {
+        const n = { ...m };
+        if (!sz || (sz[0] === 1 && sz[1] === 1)) delete n[id];
+        else n[id] = sz;
+        lsSet('kymo:sizes:' + scope, n);
+        return n;
+      }),
+    [scope],
+  );
   const setFilter = (f: string) => {
     setFilterRaw(f);
     lsSet('kymo:filter:' + scope, f);
@@ -569,7 +685,7 @@ export function useGridState(scope: string, allKeys: string[]) {
   const groupNames = useMemo(() => groupKeys(keys).map((g) => g.name), [keys]);
   const allCollapsed = groupNames.length > 0 && groupNames.every((g) => collapsed.has(g));
   const collapseAll = (c: boolean) => saveCollapsed(c ? new Set(groupNames) : new Set());
-  return { filter, setFilter, filterError: compiled.error, collapsed, toggle, keys, collapseAll, allCollapsed, pins, togglePin };
+  return { filter, setFilter, filterError: compiled.error, collapsed, toggle, keys, collapseAll, allCollapsed, pins, togglePin, sizes, setSize };
 }
 
 /**
